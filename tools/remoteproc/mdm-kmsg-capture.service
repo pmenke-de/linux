@@ -1,0 +1,23 @@
+[Unit]
+Description=Capture kernel log to persistent file during modem bring-up tests
+DefaultDependencies=no
+After=local-fs.target systemd-journald.service
+Before=basic.target
+Wants=systemd-journald.service
+Conflicts=shutdown.target reboot.target halt.target kexec.target poweroff.target
+Before=shutdown.target reboot.target halt.target kexec.target poweroff.target
+
+[Service]
+Type=simple
+LogsDirectory=mdm-trace
+ExecStart=/usr/bin/journalctl -kf -o short-monotonic --no-hostname --no-pager
+StandardOutput=append:/var/log/mdm-trace/kernel-follow.log
+StandardError=journal
+Restart=always
+RestartSec=1
+TimeoutStopSec=5
+KillMode=mixed
+SendSIGKILL=yes
+
+[Install]
+WantedBy=sysinit.target

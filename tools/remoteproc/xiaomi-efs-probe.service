@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+[Unit]
+Description=Probe Xiaomi SDX55 EFS paths during early modem boot
+After=qrtr-ns.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xiaomi-efs-probe-runner.sh
+
+[Install]
+WantedBy=multi-user.target

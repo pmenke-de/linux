@@ -1,0 +1,21 @@
+[Unit]
+Description=DIAG reader for SDX55 modem crash diagnosis
+After=local-fs.target
+Conflicts=shutdown.target reboot.target halt.target kexec.target poweroff.target
+Before=shutdown.target reboot.target halt.target kexec.target poweroff.target
+
+[Service]
+Type=simple
+TimeoutStartSec=300
+TimeoutStopSec=5
+KillMode=mixed
+SendSIGKILL=yes
+ExecStartPre=/bin/sh -c 'while [ ! -e /dev/wwan0qcdm0 ]; do sleep 0.2; done'
+ExecStart=/usr/local/bin/diag_reader /dev/wwan0qcdm0
+Restart=on-failure
+RestartSec=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

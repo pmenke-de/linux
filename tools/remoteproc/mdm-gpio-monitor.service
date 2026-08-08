@@ -1,0 +1,21 @@
+[Unit]
+Description=Continuously record SDX55 ESOC sideband GPIO state to persistent log
+DefaultDependencies=no
+After=local-fs.target sysinit.target
+Before=basic.target
+Conflicts=shutdown.target reboot.target halt.target kexec.target poweroff.target
+Before=shutdown.target reboot.target halt.target kexec.target poweroff.target
+
+[Service]
+Type=simple
+LogsDirectory=mdm-trace
+ExecStart=/usr/local/bin/mdm-gpio-monitor.sh
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=1
+TimeoutStopSec=5
+KillMode=mixed
+
+[Install]
+WantedBy=sysinit.target

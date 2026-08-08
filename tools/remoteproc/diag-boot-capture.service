@@ -1,0 +1,23 @@
+[Unit]
+Description=SDX55 DIAG F3 capture from boot
+# The MHI DIAG channel can only be opened ONCE per modem boot: after a
+# close, mhi_wwan_ctrl_start() runs but then fails and open() returns EIO.
+# So this must be the single DIAG consumer, started as early as possible -
+# the interesting window (core never reaching "ready") is the first ~150 s.
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+# /dev/wwan0qcdm0 only exists once MHI has enumerated the modem (~28 s).
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 240); do [ -e /dev/wwan0qcdm0 ] && exit 0; sleep 0.5; done; exit 1'
+# Raw stream is archived for QSR4 replay:
+#   scat -t qc -d diag-boot.qmdl --qsr4-hash qdsp6m.qdb --msgs
+ExecStart=/usr/local/bin/diag_reader /dev/wwan0qcdm0 /var/log/diag-boot.qmdl
+# One shot only - restarting would just hit the EIO described above.
+Restart=no
+StandardOutput=append:/var/log/diag-boot.log
+StandardError=append:/var/log/diag-boot.log
+
+[Install]
+WantedBy=multi-user.target

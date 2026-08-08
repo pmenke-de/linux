@@ -1,0 +1,24 @@
+[Unit]
+Description=SDX55 remote filesystem (TFTP over QRTR)
+# Without this the modem logs "could not resolve remote host" for QRTR
+# service 4096 instance 3 and every RFS access times out - including
+# /readwrite/mcfg.tmp, so carrier configuration can never complete.
+# Must be up before the modem starts asking, i.e. as early as possible.
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+# readonly/firmware is backed by the modem partition, which carries
+# image/modem_pr/so/*.mbn - the files the modem requests by name.
+ExecStartPre=/bin/sh -c 'mkdir -p /mnt/modemfw /var/lib/rfs/mdm/mpss/readonly /var/lib/rfs/mdm/mpss/readwrite /var/lib/rfs/mdm/mpss/shared /var/lib/rfs/mdm/mpss/hlos /var/lib/rfs/mdm/mpss/ramdumps'
+ExecStartPre=/bin/sh -c 'mountpoint -q /mnt/modemfw || mount -o ro /dev/disk/by-partlabel/modem /mnt/modemfw'
+ExecStartPre=/bin/sh -c '[ -e /var/lib/rfs/mdm/mpss/readonly/firmware ] || ln -s /mnt/modemfw /var/lib/rfs/mdm/mpss/readonly/firmware'
+ExecStart=/usr/local/bin/qrtr_tftp_server -r /var/lib/rfs/mdm/mpss
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
