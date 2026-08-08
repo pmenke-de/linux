@@ -91,6 +91,7 @@ struct qcom_fg_chip {
 	struct power_supply *batt_psy;
 	struct power_supply_battery_info *batt_info;
 	struct power_supply *chg_psy;
+	bool chg_psy_owned;  /* true if chg_psy was obtained via get_by_name */
 	int status;
 	struct delayed_work status_changed_work;
 
@@ -718,12 +719,6 @@ static int qcom_fg_gen3_get_current(struct qcom_fg_chip *chip, int *val)
 	temp = (s16)(readval[1] << 8 | readval[0]);
 	*val = div_s64((s64)temp * 488281, 1000);
 
-	/*
-	 * PSY API expects charging batteries to report a positive current, which is inverted
-	 * to what the PMIC reports.
-	 */
-	*val = -*val;
-
 	return 0;
 }
 
@@ -1069,7 +1064,7 @@ static int qcom_fg_clear_ima(struct qcom_fg_chip *chip,
 	return 0;
 }
 
-irqreturn_t qcom_fg_handle_soc_delta(int irq, void *data)
+static irqreturn_t qcom_fg_handle_soc_delta(int irq, void *data)
 {
 	struct qcom_fg_chip *chip = data;
 
@@ -1080,7 +1075,7 @@ irqreturn_t qcom_fg_handle_soc_delta(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-irqreturn_t qcom_fg_handle_mem_avail(int irq, void *data)
+static irqreturn_t qcom_fg_handle_mem_avail(int irq, void *data)
 {
 	struct qcom_fg_chip *chip = data;
 
@@ -1111,26 +1106,32 @@ static int qcom_fg_notifier_call(struct notifier_block *nb,
 	union power_supply_propval propval;
 	int ret;
 
+	/* Skip notifications from the battery itself */
+	if (psy == chip->batt_psy)
+		return NOTIFY_OK;
+
+	/*
+	 * Lazily bind to the charger PSY if probe-time lookup missed it due
+	 * to probe ordering.
+	 */
+	if (!chip->chg_psy &&
+	    strcmp(psy->desc->name, "pm8150b-charger") == 0) {
+		chip->chg_psy = psy;
+		chip->chg_psy_owned = false;
+		chip->status = POWER_SUPPLY_STATUS_UNKNOWN;
+	}
+
 	if (psy == chip->chg_psy) {
 		ret = power_supply_get_property(psy,
 				POWER_SUPPLY_PROP_STATUS, &propval);
 		if (ret)
 			chip->status = POWER_SUPPLY_STATUS_UNKNOWN;
-
-		chip->status = propval.intval;
+		else
+			chip->status = propval.intval;
 
 		power_supply_changed(chip->batt_psy);
 
 		if (chip->status == POWER_SUPPLY_STATUS_UNKNOWN) {
-			/*
-			 * REVISIT: Find better solution or remove current-based
-			 * status checking once checking is properly implemented
-			 * in charger drivers
-
-			 * Sometimes it take a while for current to stabilize,
-			 * so signal property change again later to make sure
-			 * current-based status is properly detected.
-			 */
 			cancel_delayed_work_sync(&chip->status_changed_work);
 			schedule_delayed_work(&chip->status_changed_work,
 						msecs_to_jiffies(1000));
@@ -1309,25 +1310,27 @@ static int qcom_fg_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	/* Optional: Get charger power supply for status checking */
-	chip->chg_psy = power_supply_get_by_name("power-supplies");
-	if (IS_ERR(chip->chg_psy)) {
-		ret = PTR_ERR(chip->chg_psy);
-		dev_warn(chip->dev, "Failed to get charger supply: %d\n", ret);
+	/* Try to bind the charger PSY now so we have status immediately.
+	 * If it hasn't probed yet, the notifier will bind lazily on the
+	 * first pm8150b-charger change event.
+	 */
+	chip->chg_psy = power_supply_get_by_name("pm8150b-charger");
+	if (!IS_ERR_OR_NULL(chip->chg_psy))
+		chip->chg_psy_owned = true;
+	else
 		chip->chg_psy = NULL;
-	}
 
-	if (chip->chg_psy) {
-		INIT_DELAYED_WORK(&chip->status_changed_work,
-			qcom_fg_status_changed_worker);
+	INIT_DELAYED_WORK(&chip->status_changed_work,
+		qcom_fg_status_changed_worker);
 
-		chip->nb.notifier_call = qcom_fg_notifier_call;
-		ret = power_supply_reg_notifier(&chip->nb);
-		if (ret) {
-			dev_err(chip->dev,
-				"Failed to register notifier: %d\n", ret);
-			return ret;
-		}
+	chip->nb.notifier_call = qcom_fg_notifier_call;
+	ret = power_supply_reg_notifier(&chip->nb);
+	if (ret) {
+		dev_err(chip->dev,
+			"Failed to register notifier: %d\n", ret);
+		if (chip->chg_psy && chip->chg_psy_owned)
+			power_supply_put(chip->chg_psy);
+		return ret;
 	}
 
 	return 0;
@@ -1336,6 +1339,12 @@ static int qcom_fg_probe(struct platform_device *pdev)
 static void qcom_fg_remove(struct platform_device *pdev)
 {
 	struct qcom_fg_chip *chip = platform_get_drvdata(pdev);
+
+	power_supply_unreg_notifier(&chip->nb);
+	cancel_delayed_work_sync(&chip->status_changed_work);
+
+	if (chip->chg_psy && chip->chg_psy_owned)
+		power_supply_put(chip->chg_psy);
 
 	power_supply_put_battery_info(chip->batt_psy, chip->batt_info);
 

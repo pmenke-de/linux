@@ -358,7 +358,7 @@ static int smb5_apsd_get_charger_type(struct smb5_chip *chip, int *val)
 		return rc;
 	}
 	if (!(apsd_stat & APSD_DTC_STATUS_DONE_BIT)) {
-		dev_err(chip->dev, "Apsd not ready");
+		dev_dbg(chip->dev, "Apsd not ready");
 		return -EAGAIN;
 	}
 
@@ -421,13 +421,14 @@ static int smb5_get_prop_status(struct smb5_chip *chip, int *val)
 		return rc;
 	}
 
-	if (stat[1] & VBATT_GTET_INHIBIT_BIT) {
-		*val = POWER_SUPPLY_STATUS_NOT_CHARGING;
-		return 0;
-	}
-
 	stat[0] = stat[0] & BATTERY_CHARGER_STATUS_MASK;
 
+	/*
+	 * Check the active charge state first. VBATT_GTET_INHIBIT_BIT in
+	 * STATUS_2 is set whenever VBAT crosses the inhibit threshold, which
+	 * happens normally during taper charging — it must not override an
+	 * active charge state like TAPER_CHARGE.
+	 */
 	switch (stat[0]) {
 	case TRICKLE_CHARGE:
 	case PRE_CHARGE:
@@ -436,12 +437,16 @@ static int smb5_get_prop_status(struct smb5_chip *chip, int *val)
 	case TAPER_CHARGE:
 		*val = POWER_SUPPLY_STATUS_CHARGING;
 		return rc;
-	case DISABLE_CHARGE:
-		*val = POWER_SUPPLY_STATUS_NOT_CHARGING;
-		return rc;
 	case TERMINATE_CHARGE:
 	case INHIBIT_CHARGE:
 		*val = POWER_SUPPLY_STATUS_FULL;
+		return rc;
+	case DISABLE_CHARGE:
+		if (stat[1] & VBATT_GTET_INHIBIT_BIT) {
+			*val = POWER_SUPPLY_STATUS_FULL;
+			return 0;
+		}
+		*val = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		return rc;
 	default:
 		*val = POWER_SUPPLY_STATUS_UNKNOWN;
@@ -507,6 +512,11 @@ static void smb5_status_change_work(struct work_struct *work)
 	}
 
 	if (rc < 0) {
+		/*
+		 * APSD not done yet — set a conservative DCP interim limit so
+		 * we charge at ≥1.5 A while waiting, then re-check after 1 s.
+		 */
+		smb5_set_current_limit(chip, DCP_CURRENT_UA);
 		rc = regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
 					APSD_RERUN_BIT, APSD_RERUN_BIT);
 		schedule_delayed_work(&chip->status_change_work,
@@ -726,7 +736,11 @@ static const struct power_supply_desc smb5_psy_desc = {
 /* Init sequence derived from vendor downstream driver */
 static const struct smb5_register smb5_init_seq[] = {
 	{ .addr = USBIN_CMD_IL, .mask = USBIN_SUSPEND_BIT, .val = 0 },
-	{ .addr = AICL_RERUN_TIME_CFG, .mask = AICL_RERUN_TIME_MASK, .val = 0 },
+	{ .addr = AICL_RERUN_TIME_CFG, .mask = AICL_RERUN_TIME_MASK, .val = 3 },
+	/* Enable auto-recharge using SOC threshold (set to 98% separately) */
+	{ .addr = CHGR_CFG2,
+	  .mask = AUTO_RECHG_BIT | SOC_BASED_RECHG_BIT | CHARGER_INHIBIT_BIT,
+	  .val = AUTO_RECHG_BIT | SOC_BASED_RECHG_BIT },
 	/*
 	 * By default configure us as an upstream facing port
 	 * FIXME: This will be handled by the type-c driver
@@ -908,11 +922,24 @@ static int smb5_probe(struct platform_device *pdev)
 		return dev_err_probe(chip->dev, rc,
 				     "Failed to init status change work\n");
 
+	/* Float voltage: same 7.5 mV / 3487.5 mV-base register as pmi8998 */
 	rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500 + 1;
 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
 				FLOAT_VOLTAGE_SETTING_MASK, rc);
 	if (rc < 0)
 		return dev_err_probe(chip->dev, rc, "Couldn't set vbat max\n");
+
+	/* Fast charge current: step size is 50 mA, same scale as ICL */
+	if (chip->batt_info->constant_charge_current_max_ua > 0) {
+		rc = chip->batt_info->constant_charge_current_max_ua /
+		     CURRENT_SCALE_FACTOR;
+		rc = regmap_update_bits(chip->regmap,
+					chip->base + FAST_CHARGE_CURRENT_CFG,
+					FAST_CHARGE_CURRENT_SETTING_MASK, rc);
+		if (rc < 0)
+			return dev_err_probe(chip->dev, rc,
+					     "Couldn't set fast charge current\n");
+	}
 
 	rc = smb5_init_irq(chip, &irq, "bat-ov", smb5_handle_batt_overvoltage);
 	if (rc < 0)
