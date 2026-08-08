@@ -9,9 +9,11 @@
 #include <linux/dma-direction.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
+#include <linux/iommu.h>
 #include <linux/list.h>
 #include <linux/mhi.h>
 #include <linux/module.h>
+#include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/wait.h>
 #include "internal.h"
@@ -197,7 +199,11 @@ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
 				 MHISTATUS_READY_MASK, 1, interval_us,
 				 timeout_ms);
 	if (ret) {
-		dev_err(dev, "Device failed to enter MHI Ready\n");
+		u32 ctrl_val = 0, status_val = 0;
+		(void)mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, MHICTRL, &ctrl_val);
+		(void)mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, MHISTATUS, &status_val);
+		dev_err(dev, "Device failed to enter MHI Ready: MHICTRL=%#010x MHISTATUS=%#010x\n",
+			ctrl_val, status_val);
 		return ret;
 	}
 
@@ -249,7 +255,79 @@ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
 
 	/* Set MHI to M0 state */
 	mhi_set_mhi_state(mhi_cntrl, MHI_STATE_M0);
+
+	/* Debug: poll MHISTATUS to see if device acknowledges M0 */
+	{
+		u32 mhictrl = 0, mhistatus = 0, mhicfg = 0;
+		int poll;
+
+		for (poll = 0; poll < 50; poll++) {
+			(void)mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, 0x48, &mhistatus);
+			if ((mhistatus & 0xff00) == 0x0200) /* M0 in bits[15:8] */
+				break;
+			udelay(100);
+		}
+		(void)mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, 0x10, &mhicfg);
+		(void)mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, 0x38, &mhictrl);
+		dev_info(dev, "After M0 (poll=%d): MHICFG=0x%x MHICTRL=0x%x MHISTATUS=0x%x\n",
+			 poll, mhicfg, mhictrl, mhistatus);
+	}
+
 	read_unlock_bh(&mhi_cntrl->pm_lock);
+
+	/*
+	 * Check if the modem wrote events to event ring 0 after M0.
+	 * Wait briefly then compare RP vs WP in the event ring context.
+	 */
+	{
+		struct mhi_event *mhi_event = &mhi_cntrl->mhi_event[0];
+		struct mhi_ring *ring = &mhi_event->ring;
+		struct mhi_event_ctxt *er_ctxt;
+
+		msleep(100);  /* give modem time to write M0 event */
+		er_ctxt = &mhi_cntrl->mhi_ctxt->er_ctxt[0];
+		dev_info(dev, "ER[0] after M0: ctxt_rp=0x%llx ctxt_wp=0x%llx ring_rp=0x%lx ring_wp=0x%lx iommu_base=0x%llx\n",
+			 le64_to_cpu(er_ctxt->rp), le64_to_cpu(er_ctxt->wp),
+			 (unsigned long)(ring->rp - ring->base),
+			 (unsigned long)(ring->wp - ring->base),
+			 ring->iommu_base);
+	}
+
+	/* Diagnostic: check EP MSI config and IOMMU domain after M0 */
+	{
+		struct pci_dev *pdev = to_pci_dev(mhi_cntrl->cntrl_dev);
+		struct iommu_domain *domain;
+		int msi_cap;
+
+		msi_cap = pci_find_capability(pdev, PCI_CAP_ID_MSI);
+		if (msi_cap) {
+			u32 al = 0, ah = 0;
+			u16 mc = 0, md = 0;
+
+			pci_read_config_word(pdev, msi_cap + PCI_MSI_FLAGS, &mc);
+			pci_read_config_dword(pdev, msi_cap + PCI_MSI_ADDRESS_LO,
+					      &al);
+			if (mc & PCI_MSI_FLAGS_64BIT) {
+				pci_read_config_dword(pdev,
+						      msi_cap + PCI_MSI_ADDRESS_HI,
+						      &ah);
+				pci_read_config_word(pdev,
+						     msi_cap + PCI_MSI_DATA_64,
+						     &md);
+			} else {
+				pci_read_config_word(pdev,
+						     msi_cap + PCI_MSI_DATA_32,
+						     &md);
+			}
+			dev_info(dev,
+				 "EP MSI after M0: ctrl=0x%04x addr=0x%08x%08x data=0x%04x\n",
+				 mc, ah, al, md);
+		}
+		domain = iommu_get_domain_for_dev(&pdev->dev);
+		dev_info(dev, "IOMMU domain type=%d for %s\n",
+			 domain ? domain->type : -1,
+			 dev_name(&pdev->dev));
+	}
 
 	return 0;
 
@@ -879,8 +957,13 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
 
 	/* Return busy if there are any pending resources */
 	if (atomic_read(&mhi_cntrl->dev_wake) ||
-	    atomic_read(&mhi_cntrl->pending_pkts))
+	    atomic_read(&mhi_cntrl->pending_pkts)) {
+		dev_info(dev,
+			 "mhi_pm_suspend: EBUSY dev_wake=%d pending_pkts=%d\n",
+			 atomic_read(&mhi_cntrl->dev_wake),
+			 atomic_read(&mhi_cntrl->pending_pkts));
 		return -EBUSY;
+	}
 
 	/* Take MHI out of M2 state */
 	read_lock_bh(&mhi_cntrl->pm_lock);
@@ -1159,8 +1242,8 @@ int mhi_async_power_up(struct mhi_controller *mhi_cntrl)
 	}
 
 	state = mhi_get_mhi_state(mhi_cntrl);
-	dev_dbg(dev, "Attempting power on with EE: %s, state: %s\n",
-		TO_MHI_EXEC_STR(current_ee), mhi_state_str(state));
+	dev_info(dev, "Power on: EE=%s state=%s\n",
+		 TO_MHI_EXEC_STR(current_ee), mhi_state_str(state));
 
 	if (state == MHI_STATE_SYS_ERR) {
 		mhi_set_mhi_state(mhi_cntrl, MHI_STATE_RESET);
