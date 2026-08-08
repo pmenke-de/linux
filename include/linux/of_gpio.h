@@ -53,6 +53,21 @@ static inline int of_get_named_gpio_flags(const struct device_node *np,
 
 #endif /* CONFIG_OF_GPIO */
 
+/**
+ * of_get_named_gpio() - Get a GPIO number to use with the legacy GPIO API
+ * @np:		device node to get GPIO from
+ * @propname:	Name of property containing gpio specifier(s)
+ * @index:	index of the GPIO
+ *
+ * Returns GPIO number to use with Linux generic GPIO API, or one of the errno
+ * value on the error condition.
+ */
+static inline int of_get_named_gpio(const struct device_node *np,
+				    const char *propname, int index)
+{
+	return of_get_named_gpio_flags(np, propname, index, NULL);
+}
+
 static inline int of_get_gpio_flags(const struct device_node *np, int index,
 		      enum of_gpio_flags *flags)
 {

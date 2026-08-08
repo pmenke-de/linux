@@ -160,7 +160,7 @@ static void esoc_clink_release(struct device *dev)
 {
 	struct esoc_clink *esoc_clink = to_esoc_clink(dev);
 
-	ida_simple_remove(&esoc_ida, esoc_clink->id);
+	ida_free(&esoc_ida, esoc_clink->id);
 	kfree(esoc_clink);
 }
 
@@ -361,7 +361,7 @@ void esoc_clink_unregister(struct esoc_clink *esoc_clink)
 		esoc_clink_del_device(&esoc_clink->dev, NULL);
 		device_unregister(&esoc_clink->dev);
 		put_device(&esoc_clink->dev);
-		ida_simple_remove(&esoc_ida, esoc_clink->id);
+		ida_free(&esoc_ida, esoc_clink->id);
 	}
 }
 
@@ -374,7 +374,7 @@ int esoc_clink_register(struct esoc_clink *esoc_clink)
 		dev_err(esoc_clink->parent, "invalid esoc arguments\n");
 		return -EINVAL;
 	}
-	id = ida_simple_get(&esoc_ida, 0, ESOC_DEV_MAX, GFP_KERNEL);
+	id = ida_alloc_range(&esoc_ida, 0, ESOC_DEV_MAX - 1, GFP_KERNEL);
 	if (id < 0) {
 		err = id;
 		goto exit_ida;
@@ -404,7 +404,7 @@ int esoc_clink_register(struct esoc_clink *esoc_clink)
 exit_dev_add:
 	device_unregister(dev);
 exit_ida:
-	ida_simple_remove(&esoc_ida, id);
+	ida_free(&esoc_ida, id);
 	pr_err("unable to register %s, err = %d\n", esoc_clink->name, err);
 	return err;
 }

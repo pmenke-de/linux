@@ -1193,7 +1193,7 @@
 	cs-gpios = <&tlmm 11 GPIO_ACTIVE_LOW>;
 
 	touchscreen: touchscreen@0 {
-		compatible = "novatek,NVT-ts-spi";
+		compatible = "novatek,NVT-ts-spi-nt36675";
 		reg = <0>;
 		status = "okay";
 
