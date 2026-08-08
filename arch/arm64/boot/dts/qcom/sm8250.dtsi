@@ -23,6 +23,7 @@
 #include <dt-bindings/thermal/thermal.h>
 #include <dt-bindings/clock/qcom,camcc-sm8250.h>
 #include <dt-bindings/clock/qcom,videocc-sm8250.h>
+#include <dt-bindings/interconnect/qcom,sm8250.h>
 
 / {
 	interrupt-parent = <&intc>;
@@ -2337,7 +2338,7 @@
 
 			status = "disabled";
 
-			pcie@0 {
+			pcieport1: pcie@0 {
 				device_type = "pci";
 				reg = <0x0 0x0 0x0 0x0 0x0>;
 				bus-range = <0x01 0xff>;
@@ -2462,9 +2463,13 @@
 			pinctrl-0 = <&pcie2_default_state>;
 			dma-coherent;
 
+			interconnects = <&aggre1_noc MASTER_PCIE_2 0 &mc_virt SLAVE_EBI_CH0 0>,
+					<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_PCIE_2_CFG 0>;
+			interconnect-names = "pcie-mem", "cpu-pcie";
+
 			status = "disabled";
 
-			pcie@0 {
+			pcie2_rp: pcie@0 {
 				device_type = "pci";
 				reg = <0x0 0x0 0x0 0x0 0x0>;
 				bus-range = <0x01 0xff>;
@@ -2627,6 +2632,36 @@
 				 <&apps_smmu 0x596 0x0011>;
 			interconnects = <&aggre2_noc MASTER_CRYPTO_CORE_0 0 &mc_virt SLAVE_EBI_CH0 0>;
 			interconnect-names = "memory";
+		};
+
+		ipa: ipa@1e40000 {
+			compatible = "qcom,sm8250-ipa";
+
+			iommus = <&apps_smmu 0x5c0 0x0>,
+				 <&apps_smmu 0x5c2 0x0>;
+			reg = <0 0x01e40000 0 0x8000>,
+			      <0 0x01e50000 0 0x4b20>,
+			      <0 0x01e04000 0 0x23000>;
+			reg-names = "ipa-reg",
+				    "ipa-shared",
+				    "gsi";
+
+			interrupts-extended = <&intc GIC_SPI 311 IRQ_TYPE_LEVEL_HIGH>, // was EDGE_RISING
+					      <&intc GIC_SPI 432 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "ipa",
+					  "gsi";
+
+			clocks = <&rpmhcc RPMH_IPA_CLK>;
+			clock-names = "core";
+
+			interconnects = <&aggre2_noc MASTER_IPA 0 &mc_virt SLAVE_EBI_CH0 0>,
+					<&aggre2_noc MASTER_IPA 0 &system_noc SLAVE_OCIMEM 0>,
+					<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_IPA_CFG 0>;
+			interconnect-names = "memory", "imem", "config";
+
+			qcom,qmp = <&aoss_qmp>;
+
+			status = "disabled";
 		};
 
 		tcsr_mutex: hwlock@1f40000 {
@@ -5146,6 +5181,20 @@
 				bias-disable;
 			};
 
+			mdm2ap_active: mdm2ap-default-state {
+				pins = "gpio1", "gpio3";
+				function = "gpio";
+				drive-strength = <8>;
+				bias-disable;
+			};
+
+			mdm2ap_sleep: mdm2ap-sleep-state {
+				pins = "gpio1", "gpio3";
+				function = "gpio";
+				drive-strength = <8>;
+				bias-disable;
+			};
+
 			cam2_default: cam2-default-state {
 				rst-pins {
 					pins = "gpio78";
@@ -5278,20 +5327,6 @@
 					bias-pull-down;
 					drive-strength = <2>; /* 2 mA */
 				};
-			};
-
-			mdm2ap_active: mdm2ap-default-state {
-				pins = "gpio1", "gpio3";
-				function = "gpio";
-				drive-strength = <8>;
-				bias-disable;
-			};
-
-			mdm2ap_sleep: mdm2ap-sleep-state {
-				pins = "gpio1", "gpio3";
-				function = "gpio";
-				drive-strength = <8>;
-				bias-disable;
 			};
 
 			pri_mi2s_active: pri-mi2s-active-state {
@@ -6120,6 +6155,28 @@
 							#sound-dai-cells = <0>;
 						};
 					};
+
+					q6mvm: service@9 {
+						compatible = "qcom,q6mvm";
+						reg = <APR_SVC_ADSP_MVM>;
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+						q6voicedai: dais {
+							compatible = "qcom,q6voice-dais";
+							#sound-dai-cells = <0>;
+						};
+					};
+
+					q6cvs: service@a {
+						compatible = "qcom,q6cvs";
+						reg = <APR_SVC_ADSP_CVS>;
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+					};
+
+					q6cvp: service@b {
+						compatible = "qcom,q6cvp";
+						reg = <APR_SVC_ADSP_CVP>;
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+					};
 				};
 
 				fastrpc {
@@ -6331,6 +6388,42 @@
 			interrupt-names = "dcvsh-irq-0", "dcvsh-irq-1", "dcvsh-irq-2";
 			#freq-domain-cells = <1>;
 			#clock-cells = <1>;
+		};
+
+		mdm0: qcom,mdm0 {
+			compatible = "qcom,ext-sdx55m";
+			cell-index = <0>;
+			#address-cells = <0>;
+			interrupt-parent = <&mdm0>;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0xffffffff>;
+			interrupt-names =
+				"err_fatal_irq",
+				"status_irq",
+				"mdm2ap_vddmin_irq";
+			/* modem attributes */
+			qcom,ramdump-delay-ms = <3000>;
+			qcom,ramdump-timeout-ms = <120000>;
+			qcom,vddmin-modes = "normal";
+			qcom,vddmin-drive-strength = <8>;
+			qcom,sfr-query;
+			qcom,sysmon-id = <20>;
+			qcom,ssctl-instance-id = <0x10>;
+			qcom,support-shutdown;
+			qcom,pil-force-shutdown;
+			qcom,esoc-skip-restart-for-mdm-crash;
+			qcom,ignore-ssr-failure;
+			pinctrl-names = "mdm_active", "mdm_suspend";
+			pinctrl-0 = <&ap2mdm_active &mdm2ap_active>;
+			pinctrl-1 = <&ap2mdm_sleep &mdm2ap_sleep>;
+			interrupt-map = <0 &tlmm 1 0x3
+					1 &tlmm 3 0x3>;
+			qcom,mdm2ap-errfatal-gpio = <&tlmm 1 0x00>;
+			qcom,ap2mdm-errfatal-gpio = <&tlmm 57 0x00>;
+			qcom,mdm2ap-status-gpio   = <&tlmm 3 0x00>;
+			qcom,ap2mdm-status-gpio   = <&tlmm 56 0x00>;
+			qcom,mdm-link-info = "0306_02.01.00";
+			status = "disabled";
 		};
 	};
 

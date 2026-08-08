@@ -38,3 +38,9 @@
 &wifi_0 {
 	qcom,calibration-variant = "Xiaomi_Pad_5Pro_5G";
 };
+
+&soc {
+	mdm0: qcom,mdm0 {
+		status = "okay";
+	};
+};
