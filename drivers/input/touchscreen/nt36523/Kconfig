@@ -1,11 +1,15 @@
 #
-# Novatek NT36523 touchscreen driver configuration
+# Novatek NT36523 / NT36675 touchscreen driver configuration
 #
 config TOUCHSCREEN_NT36523_SPI
-	tristate "Novatek NT36523 no flash SPI driver"
+	tristate "Novatek NT36523/NT36675 no flash SPI driver"
 	default n
 	help
-	  Say Y here if you have a Novatek NT36523 no flash touchscreen connected
-	  to your system by SPI bus.
+	  Say Y here if you have a Novatek NT36523 or NT36675 no-flash
+	  touchscreen connected to your system by SPI bus.
+
+	  This driver also supports the NT36675 found on the Xiaomi Apollo,
+	  including the vendor-derived MP (multipoint) self-test feature and
+	  ESD display recovery via the FFM-to-CPU bridge.
 
 	  If unsure, say N.

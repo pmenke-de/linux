@@ -22,6 +22,9 @@
 #include "nt36xxx.h"
 
 #if BOOT_UPDATE_FIRMWARE
+
+extern struct workqueue_struct *nvt_fwu_wq;
+
 #define SIZE_4KB 4096
 #define NVT_FLASH_END_FLAG_LEN 3
 #define FLASH_SECTOR_SIZE SIZE_4KB
@@ -667,6 +670,103 @@ static void nvt_read_bld_hw_crc(void)
 
 /*******************************************************
 Description:
+	Novatek touchscreen FFM-to-CPU display-off function.
+	NT36675 (Xiaomi Apollo) vendor feature: writes a display-off
+	sequence to the panel via the FFM2CPU bridge registers during
+	ESD recovery.  Requires FFM2CPU_CTL, F2C_LENGTH, CPU_IF_ADDR_*
+	and FFM_ADDR_* to be populated in the chip's memory map.
+
+return:
+	Executive outcomes. 0---succeed. negative---fail.
+*******************************************************/
+#if NVT_TOUCH_ESD_DISP_RECOVERY
+#define DISP_OFF_ADDR 0x2800
+int nvt_f2c_disp_off(void)
+{
+	uint8_t buf[8] = {0};
+	int ret = 0;
+	uint8_t tmp_val = 0;
+	int32_t write_disp_off_retry = 0;
+	int32_t retry = 0;
+
+	NVT_LOG("++\n");
+
+	if (!ts->mmap->FFM2CPU_CTL) {
+		NVT_LOG("FFM2CPU bridge not available for this chip, skipping\n");
+		return 0;
+	}
+
+	/* SW Reset & Idle */
+	nvt_sw_reset_idle();
+
+	/* Step1: Set REG CPU_IF_ADDR[15:0] */
+	nvt_write_addr(ts->mmap->CPU_IF_ADDR_LOW,  DISP_OFF_ADDR & 0xFF);
+	nvt_write_addr(ts->mmap->CPU_IF_ADDR_HIGH, (DISP_OFF_ADDR >> 8) & 0xFF);
+
+	/* Step2: Set REG FFM_ADDR[15:0] to 0x20000 */
+	nvt_write_addr(ts->mmap->FFM_ADDR_LOW,  0x00);
+	nvt_write_addr(ts->mmap->FFM_ADDR_MID,  0x00);
+	if (ts->hw_crc > 1)
+		nvt_write_addr(ts->mmap->FFM_ADDR_HIGH, 0x00);
+
+	/* Step3: Set REG F2C_LENGTH[7:0] */
+	nvt_write_addr(ts->mmap->F2C_LENGTH, 1);
+
+nvt_write_disp_off_retry:
+	/* Step4: Set CPU_Polling_En=1, F2C_RW=1, CPU_IF_ADDR_INC=1, F2C_EN=1 */
+	nvt_set_page(ts->mmap->FFM2CPU_CTL);
+	buf[0] = ts->mmap->FFM2CPU_CTL & 0x7F;
+	buf[1] = 0xFF;
+	ret = CTP_SPI_READ(ts->client, buf, 2);
+	if (ret) {
+		NVT_ERR("Read FFM2CPU control failed!\n");
+		return ret;
+	}
+	tmp_val = buf[1] | 0x27;
+	nvt_write_addr(ts->mmap->FFM2CPU_CTL, tmp_val);
+
+	/* Step5: wait F2C_EN = 0 */
+	retry = 0;
+	while (1) {
+		nvt_set_page(ts->mmap->FFM2CPU_CTL);
+		buf[0] = ts->mmap->FFM2CPU_CTL & 0x7F;
+		buf[1] = 0xFF;
+		buf[2] = 0xFF;
+		ret = CTP_SPI_READ(ts->client, buf, 3);
+		if (ret) {
+			NVT_ERR("Read FFM2CPU control failed!\n");
+			return ret;
+		}
+
+		if ((buf[1] & 0x01) == 0x00)
+			break;
+
+		usleep_range(1000, 1000);
+		retry++;
+
+		if (unlikely(retry > 1)) {
+			NVT_ERR("Wait F2C_EN = 0 failed!\n");
+			return -EIO;
+		}
+	}
+
+	/* Step6: Check TH_CPU_CHK status (1: Success, 0: Fail), retry Step4 if needed */
+	if (((buf[2] & 0x04) >> 2) != 0x01) {
+		write_disp_off_retry++;
+		if (write_disp_off_retry <= 3)
+			goto nvt_write_disp_off_retry;
+		NVT_ERR("Write display off failed!, buf[1]=0x%02X, buf[2]=0x%02X\n",
+			buf[1], buf[2]);
+		return -EIO;
+	}
+
+	NVT_LOG("--\n");
+	return ret;
+}
+#endif /* NVT_TOUCH_ESD_DISP_RECOVERY */
+
+/*******************************************************
+Description:
 	Novatek touchscreen Download_Firmware with HW CRC
 function. It's complete download firmware flow.
 
@@ -886,15 +986,31 @@ return:
 *******************************************************/
 void Boot_Update_Firmware(struct work_struct *work)
 {
+	int32_t ret;
+
 	mutex_lock(&ts->lock);
 	if (nvt_get_dbgfw_status()) {
-		if (nvt_update_firmware(DEFAULT_DEBUG_FW_NAME) < 0) {
+		ret = nvt_update_firmware(DEFAULT_DEBUG_FW_NAME);
+		if (ret < 0) {
 			NVT_ERR("use built-in fw");
-			nvt_update_firmware(ts->fw_name);
+			ret = nvt_update_firmware(ts->fw_name);
 		}
 	} else {
-		nvt_update_firmware(ts->fw_name);
+		ret = nvt_update_firmware(ts->fw_name);
 	}
+	mutex_unlock(&ts->lock);
+
+	if (ret == -ENOENT) {
+		/* Firmware file not yet available (filesystem not mounted).
+		 * Retry after 3 s — by then udev/systemd will have mounted
+		 * the firmware partition. */
+		NVT_LOG("firmware file not found, retry in 3s\n");
+		queue_delayed_work(nvt_fwu_wq, &ts->nvt_fwu_work,
+				msecs_to_jiffies(3000));
+		return;
+	}
+
+	mutex_lock(&ts->lock);
 	disable_pen_input_device(false);
 	nvt_get_fw_info();
 	mutex_unlock(&ts->lock);

@@ -45,7 +45,7 @@ struct nvt_ts_data *ts;
 static struct drm_panel_follower_funcs nt36xxx_panel_follower_funcs;
 
 #if BOOT_UPDATE_FIRMWARE
-static struct workqueue_struct *nvt_fwu_wq;
+struct workqueue_struct *nvt_fwu_wq;
 extern void Boot_Update_Firmware(struct work_struct *work);
 #endif
 
@@ -613,6 +613,14 @@ info_retry:
 
 	NVT_LOG("fw_ver = 0x%02X, fw_type = 0x%02X, x_num=%d, y_num=%d\n", ts->fw_ver, buf[14], ts->x_num, ts->y_num);
 
+	/* Update input device ABS range if firmware reported different values */
+	if (ts->input_dev) {
+		input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X,
+				0, ts->abs_x_max - 1, 0, 0);
+		input_set_abs_params(ts->input_dev, ABS_MT_POSITION_Y,
+				0, ts->abs_y_max - 1, 0, 0);
+	}
+
 	//---Get Novatek PID---
 	nvt_read_pid();
 
@@ -688,6 +696,13 @@ static int32_t nvt_parse_dt(struct device *dev)
 	if (ret) {
 		NVT_LOG("Unable to get touchscreen firmware name\n");
 		ts->fw_name = DEFAULT_BOOT_UPDATE_FIRMWARE_NAME;
+	}
+
+	ret = of_property_read_string(np, "mp-firmware-name", &ts->mp_name);
+	if (ret) {
+		NVT_LOG("Unable to get MP firmware name, using default\n");
+		ts->mp_name = DEFAULT_MP_UPDATE_FIRMWARE_NAME;
+		ret = 0;
 	}
 
 	ret = of_property_read_u32(np, "spi-max-frequency", &ts->spi_max_freq);
@@ -788,6 +803,110 @@ bool nvt_get_dbgfw_status(void)
 {
 	return ts->fw_debug;
 }
+
+/*
+ * MP helper functions.
+ *
+ * These are needed by nt36xxx_mp_ctrlram.c to switch firmware modes and to
+ * read raw sensor data.  They were originally in the vendor's nt36xxx_ext_proc.c
+ * and are included here to avoid a separate translation unit dependency.
+ */
+#if NVT_TOUCH_MP
+
+#define HANDSHAKING_HOST_READY 0xBB
+#define SPI_TANSFER_LENGTH     256
+#define XDATA_SECTOR_SIZE      256
+
+static int32_t mp_xdata[2048];
+static uint8_t mp_xdata_tmp[2048];
+
+void nvt_change_mode(uint8_t mode)
+{
+	uint8_t buf[8] = {0};
+
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HOST_CMD);
+
+	buf[0] = EVENT_MAP_HOST_CMD;
+	buf[1] = mode;
+	CTP_SPI_WRITE(ts->client, buf, 2);
+
+	if (mode == 0x00 /* NORMAL_MODE */) {
+		buf[0] = EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE;
+		buf[1] = HANDSHAKING_HOST_READY;
+		CTP_SPI_WRITE(ts->client, buf, 2);
+		msleep(20);
+	}
+}
+
+uint8_t nvt_get_fw_pipe(void)
+{
+	uint8_t buf[8] = {0};
+
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR | EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE);
+
+	buf[0] = EVENT_MAP_HANDSHAKING_or_SUB_CMD_BYTE;
+	buf[1] = 0x00;
+	CTP_SPI_READ(ts->client, buf, 2);
+
+	return (buf[1] & 0x01);
+}
+
+void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr)
+{
+	int32_t i = 0, j = 0, k = 0;
+	uint8_t buf[SPI_TANSFER_LENGTH + 1] = {0};
+	uint32_t head_addr = 0;
+	int32_t dummy_len = 0;
+	int32_t data_len = 0;
+	int32_t residual_len = 0;
+
+	head_addr = xdata_addr - (xdata_addr % XDATA_SECTOR_SIZE);
+	dummy_len  = xdata_addr - head_addr;
+	data_len   = ts->x_num * ts->y_num * 2;
+	residual_len = (head_addr + dummy_len + data_len) % XDATA_SECTOR_SIZE;
+
+	for (i = 0; i < ((dummy_len + data_len) / XDATA_SECTOR_SIZE); i++) {
+		for (j = 0; j < (XDATA_SECTOR_SIZE / SPI_TANSFER_LENGTH); j++) {
+			nvt_set_page(head_addr + (XDATA_SECTOR_SIZE * i) + (SPI_TANSFER_LENGTH * j));
+			buf[0] = SPI_TANSFER_LENGTH * j;
+			CTP_SPI_READ(ts->client, buf, SPI_TANSFER_LENGTH + 1);
+			for (k = 0; k < SPI_TANSFER_LENGTH; k++)
+				mp_xdata_tmp[XDATA_SECTOR_SIZE * i + SPI_TANSFER_LENGTH * j + k] = buf[k + 1];
+		}
+	}
+
+	if (residual_len != 0) {
+		for (j = 0; j < (residual_len / SPI_TANSFER_LENGTH + 1); j++) {
+			nvt_set_page(xdata_addr + data_len - residual_len + (SPI_TANSFER_LENGTH * j));
+			buf[0] = SPI_TANSFER_LENGTH * j;
+			CTP_SPI_READ(ts->client, buf, SPI_TANSFER_LENGTH + 1);
+			for (k = 0; k < SPI_TANSFER_LENGTH; k++)
+				mp_xdata_tmp[(dummy_len + data_len - residual_len) + SPI_TANSFER_LENGTH * j + k] = buf[k + 1];
+		}
+	}
+
+	for (i = 0; i < (data_len / 2); i++)
+		mp_xdata[i] = (int16_t)(mp_xdata_tmp[dummy_len + i * 2] + 256 * mp_xdata_tmp[dummy_len + i * 2 + 1]);
+
+#if TOUCH_KEY_NUM > 0
+	nvt_set_page(xdata_btn_addr);
+	buf[0] = (xdata_btn_addr & 0xFF);
+	CTP_SPI_READ(ts->client, buf, (TOUCH_KEY_NUM * 2 + 1));
+	for (i = 0; i < TOUCH_KEY_NUM; i++)
+		mp_xdata[ts->x_num * ts->y_num + i] = (int16_t)(buf[1 + i * 2] + 256 * buf[1 + i * 2 + 1]);
+#endif
+
+	nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
+}
+
+void nvt_get_mdata(int32_t *buf, uint8_t *m_x_num, uint8_t *m_y_num)
+{
+	*m_x_num = ts->x_num;
+	*m_y_num = ts->y_num;
+	memcpy(buf, mp_xdata, ((ts->x_num * ts->y_num + TOUCH_KEY_NUM) * sizeof(int32_t)));
+}
+
+#endif /* NVT_TOUCH_MP */
 
 #if NVT_TOUCH_ESD_PROTECT
 void nvt_esd_check_enable(uint8_t enable)
@@ -1451,8 +1570,11 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		goto err_create_nvt_fwu_wq_failed;
 	}
 	INIT_DELAYED_WORK(&ts->nvt_fwu_work, Boot_Update_Firmware);
-	// please make sure boot update start after display reset(RESX) sequence
-	queue_delayed_work(nvt_fwu_wq, &ts->nvt_fwu_work, msecs_to_jiffies(14000));
+	/* Make sure boot update starts after the display reset (RESX) sequence.
+	 * The short delay also lets probe finish before the firmware upload
+	 * begins; the vendor's original 14 s was sized for Android's MIPI DSI
+	 * boot sequence, which mainline does not need. */
+	queue_delayed_work(nvt_fwu_wq, &ts->nvt_fwu_work, msecs_to_jiffies(200));
 #endif
 
 	NVT_LOG("NVT_TOUCH_ESD_PROTECT is %d\n", NVT_TOUCH_ESD_PROTECT);
@@ -1478,12 +1600,30 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	INIT_WORK(&ts->resume_work, nvt_resume_work);
 	INIT_WORK(&ts->suspend_work, nvt_suspend_work);
 
+#if NVT_TOUCH_MP
+	ret = nvt_mp_proc_init();
+	if (ret) {
+		NVT_ERR("nvt_mp_proc_init failed, ret=%d\n", ret);
+		goto err_mp_proc_init_failed;
+	}
+#ifndef NVT_SAVE_TESTDATA_IN_FILE
+	ret = nvt_test_data_proc_init(ts->client);
+	if (ret)
+		NVT_ERR("nvt_test_data_proc_init failed, ret=%d\n", ret);
+#endif
+#endif /* NVT_TOUCH_MP */
+
 	bTouchIsAwake = 1;
 	NVT_LOG("end\n");
 
 	nvt_irq_enable(true);
 
 	return 0;
+
+#if NVT_TOUCH_MP
+err_mp_proc_init_failed:
+	nvt_mp_proc_deinit();
+#endif
 
 err_alloc_work_thread_failed:
 
@@ -1562,6 +1702,13 @@ return:
 static void nvt_ts_remove(struct spi_device *client)
 {
 	NVT_LOG("Removing driver...\n");
+
+#if NVT_TOUCH_MP
+#ifndef NVT_SAVE_TESTDATA_IN_FILE
+	nvt_test_data_proc_deinit();
+#endif
+	nvt_mp_proc_deinit();
+#endif /* NVT_TOUCH_MP */
 
 #if NVT_TOUCH_ESD_PROTECT
 	if (nvt_esd_check_wq) {
@@ -1886,10 +2033,21 @@ static const struct nvt_ts_desc nt36532_desc = {
 	.auto_copy = CHECK_TX_AUTO_COPY_EN,
 	.input_calc_method = NVT_INPUT_CALC_NT36532,
 };
+/*
+ * NT36675 as fitted to the Xiaomi Mi 10T / Pro (apollo).  Same touch report
+ * format as the NT36523, but a different memory map and no TX auto-copy.
+ */
+static const struct nvt_ts_desc nt36675_desc = {
+	.mmap = &NT36675_memory_map,
+	.hw_crc = HWCRC_LEN_3Bytes,
+	.auto_copy = AUTOCOPY_NOSUPPORT,
+	.input_calc_method = NVT_INPUT_CALC_NT36523,
+};
 
 static struct of_device_id nvt_match_table[] = {
 	{ .compatible = "novatek,NVT-ts-spi", .data = &nt36523_desc },
 	{ .compatible = "novatek,NVT-ts-spi-nt36532", .data = &nt36532_desc },
+	{ .compatible = "novatek,NVT-ts-spi-nt36675", .data = &nt36675_desc },
 	{ },
 };
 

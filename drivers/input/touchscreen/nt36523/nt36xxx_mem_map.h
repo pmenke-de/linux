@@ -80,6 +80,18 @@ struct nvt_ts_mem_map {
 	uint32_t DMA_CRC_EN_ADDR;
 	uint32_t BLD_ILM_DLM_CRC_ADDR;
 	uint32_t DMA_CRC_FLAG_ADDR;
+	uint32_t FW_HISTORY_ADDR;
+	/*
+	 * FFM-to-CPU bridge registers (NT36675 only).
+	 * Used for nvt_f2c_disp_off() during ESD display recovery.
+	 */
+	uint32_t FFM2CPU_CTL;
+	uint32_t F2C_LENGTH;
+	uint32_t CPU_IF_ADDR_LOW;
+	uint32_t CPU_IF_ADDR_HIGH;
+	uint32_t FFM_ADDR_LOW;
+	uint32_t FFM_ADDR_MID;
+	uint32_t FFM_ADDR_HIGH;
 };
 
 struct nvt_ts_hw_info {
@@ -364,6 +376,8 @@ static const struct nvt_ts_mem_map NT36523_memory_map = {
 	.DMA_CRC_EN_ADDR          = 0x3F136,
 	.BLD_ILM_DLM_CRC_ADDR     = 0x3F133,
 	.DMA_CRC_FLAG_ADDR        = 0x3F134,
+	.FW_HISTORY_ADDR          = 0x38D54,
+	/* No FFM2CPU bridge on NT36523 */
 };
 
 static const struct nvt_ts_mem_map NT36526_memory_map = {
@@ -399,7 +413,14 @@ static const struct nvt_ts_mem_map NT36526_memory_map = {
 	.DMA_CRC_FLAG_ADDR        = 0x3F134,
 };
 
-
+/*
+ * NT36675 memory map.
+ *
+ * The base addresses (EVENT_BUF, RAW/DIFF pipes, BLD CRC etc.) are identical
+ * to the mainline NT36526 entry.  The vendor driver additionally exposes the
+ * FFM-to-CPU bridge registers used by nvt_f2c_disp_off() for ESD display
+ * recovery (NVT_TOUCH_ESD_DISP_RECOVERY).
+ */
 static const struct nvt_ts_mem_map NT36675_memory_map = {
 	.EVENT_BUF_ADDR           = 0x22D00,
 	.RAW_PIPE0_ADDR           = 0x24000,
@@ -431,6 +452,14 @@ static const struct nvt_ts_mem_map NT36675_memory_map = {
 	.DMA_CRC_EN_ADDR          = 0x3F136,
 	.BLD_ILM_DLM_CRC_ADDR     = 0x3F133,
 	.DMA_CRC_FLAG_ADDR        = 0x3F134,
+	/* FFM-to-CPU bridge (vendor NT36675, used for ESD display recovery) */
+	.FFM2CPU_CTL              = 0x3F280,
+	.F2C_LENGTH               = 0x3F283,
+	.CPU_IF_ADDR_LOW          = 0x3F284,
+	.CPU_IF_ADDR_HIGH         = 0x3F285,
+	.FFM_ADDR_LOW             = 0x3F286,
+	.FFM_ADDR_MID             = 0x3F287,
+	.FFM_ADDR_HIGH            = 0x3F288,
 };
 
 static const struct nvt_ts_mem_map NT36672A_memory_map = {
@@ -609,6 +638,9 @@ static const struct nvt_ts_trim_id_table trim_id_table[] = {
 		.mmap = &NT36523_memory_map,  .hwinfo = &NT36523_hw_info},
 	{.id = {0xFF, 0xFF, 0xFF, 0x23, 0x65, 0x03}, .mask = {0, 0, 0, 1, 1, 1},
 		.mmap = &NT36523_memory_map,  .hwinfo = &NT36523_hw_info},
+	/* NT36675 (Xiaomi Apollo) - uses vendor FFM2CPU offsets */
+	{.id = {0x0E, 0xFF, 0xFF, 0x72, 0x66, 0x03}, .mask = {1, 0, 0, 1, 1, 1},
+		.mmap = &NT36675_memory_map,  .hwinfo = &NT36675_hw_info},
 	{.id = {0x0C, 0xFF, 0xFF, 0x72, 0x66, 0x03}, .mask = {1, 0, 0, 1, 1, 1},
 		.mmap = &NT36675_memory_map,  .hwinfo = &NT36675_hw_info},
 	{.id = {0xFF, 0xFF, 0xFF, 0x26, 0x65, 0x03}, .mask = {0, 0, 0, 1, 1, 1},

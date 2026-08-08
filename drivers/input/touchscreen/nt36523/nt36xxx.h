@@ -79,8 +79,14 @@ extern const uint16_t touch_key_array[TOUCH_KEY_NUM];
 #define NVT_TOUCH_SUPPORT_HW_RST 0
 
 //---Customerized func.---
-#define NVT_TOUCH_MP 0
-#define NVT_TOUCH_MP_SETTING_CRITERIA_FROM_CSV 0
+/*
+ * NVT_TOUCH_MP: enable multipoint self-test firmware and proc interface.
+ * Ported from the vendor NT36675 (Xiaomi Apollo) driver.  The MP firmware
+ * is loaded on demand via nvt_update_firmware(ts->mp_name) before each test
+ * run and the normal FW is restored afterwards.
+ */
+#define NVT_TOUCH_MP 1
+#define NVT_TOUCH_MP_SETTING_CRITERIA_FROM_CSV 1
 #define MT_PROTOCOL_B 1
 #define FUNCPAGE_PALM 4
 #define PACKET_PALM_ON 3
@@ -89,11 +95,20 @@ extern const uint16_t touch_key_array[TOUCH_KEY_NUM];
 #define BOOT_UPDATE_FIRMWARE 1
 #define DEFAULT_BOOT_UPDATE_FIRMWARE_NAME "novatek/nt36523.bin"
 #define DEFAULT_MP_UPDATE_FIRMWARE_NAME   "novatek_ts_mp.bin"
+#define DEFAULT_DEBUG_FW_NAME             "novatek_debug_fw.bin"
+#define DEFAULT_DEBUG_MP_NAME             "novatek_debug_mp.bin"
 
 //---ESD Protect.---
 #define NVT_TOUCH_ESD_PROTECT 1
 #define NVT_TOUCH_ESD_CHECK_PERIOD 1500	/* ms */
 #define NVT_TOUCH_WDT_RECOVERY 1
+/*
+ * NVT_TOUCH_ESD_DISP_RECOVERY: NT36675 vendor feature that writes a
+ * display-off command via the FFM-to-CPU bridge (nvt_f2c_disp_off) during
+ * ESD recovery.  Requires FFM2CPU_CTL / F2C_LENGTH / CPU_IF_ADDR / FFM_ADDR
+ * registers to be populated in the chip's memory map (NT36675 only).
+ */
+#define NVT_TOUCH_ESD_DISP_RECOVERY 1
 
 enum nvt_ic_state {
 	NVT_IC_SUSPEND_IN,
@@ -141,6 +156,8 @@ struct nvt_ts_data {
 	struct nvt_config_info *config_array;
 	const struct nvt_ts_desc *desc;
 	const char *fw_name;
+	/* MP (multipoint self-test) firmware name, read from DT "mp-firmware-name" */
+	const char *mp_name;
 	bool lkdown_readed;
 	uint8_t fw_ver;
 	uint8_t x_num;
@@ -191,6 +208,10 @@ struct nvt_ts_data {
 	struct pinctrl *ts_pinctrl;
 	struct pinctrl_state *pinctrl_state_active;
 	struct pinctrl_state *pinctrl_state_suspend;
+#ifndef NVT_SAVE_TESTDATA_IN_FILE
+	/* In-memory buffer for MP self-test results (proc/nvt_test_data) */
+	void *testdata;
+#endif
 };
 
 typedef enum {
@@ -253,8 +274,28 @@ int32_t nvt_set_pocket_palm_switch(uint8_t pocket_palm_switch);
 void Boot_Update_Firmware(struct work_struct *work);
 int32_t nvt_wait_auto_copy(void);
 int32_t disable_pen_input_device(bool disable);
+
+/* MP helper functions (used by nt36xxx_mp_ctrlram.c) */
+void nvt_change_mode(uint8_t mode);
+uint8_t nvt_get_fw_pipe(void);
+void nvt_read_mdata(uint32_t xdata_addr, uint32_t xdata_btn_addr);
+void nvt_get_mdata(int32_t *buf, uint8_t *m_x_num, uint8_t *m_y_num);
+
 #if NVT_TOUCH_ESD_PROTECT
 extern void nvt_esd_check_enable(uint8_t enable);
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
+
+#if NVT_TOUCH_ESD_DISP_RECOVERY
+int nvt_f2c_disp_off(void);
+#endif
+
+#if NVT_TOUCH_MP
+extern int32_t nvt_mp_proc_init(void);
+extern void nvt_mp_proc_deinit(void);
+#ifndef NVT_SAVE_TESTDATA_IN_FILE
+extern int32_t nvt_test_data_proc_init(struct spi_device *client);
+extern void nvt_test_data_proc_deinit(void);
+#endif
+#endif /* NVT_TOUCH_MP */
 
 #endif /* _LINUX_NVT_TOUCH_H */
