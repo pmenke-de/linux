@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_gpio.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -24,21 +25,6 @@
 
 #include "gpiolib.h"
 #include "gpiolib-of.h"
-
-/*
- * This is Linux-specific flags. By default controllers' and Linux' mapping
- * match, but GPIO controllers are free to translate their own flags to
- * Linux-specific in their .xlate callback. Though, 1:1 mapping is recommended.
- */
-enum of_gpio_flags {
-	OF_GPIO_ACTIVE_LOW = 0x1,
-	OF_GPIO_SINGLE_ENDED = 0x2,
-	OF_GPIO_OPEN_DRAIN = 0x4,
-	OF_GPIO_TRANSITORY = 0x8,
-	OF_GPIO_PULL_UP = 0x10,
-	OF_GPIO_PULL_DOWN = 0x20,
-	OF_GPIO_PULL_DISABLE = 0x40,
-};
 
 /**
  * of_gpio_named_count() - Count GPIOs for a device
@@ -453,6 +439,34 @@ out:
 
 	return desc;
 }
+
+/**
+ * of_get_named_gpio_flags() - Get a GPIO number and its OF flags
+ * @np:		device node to get GPIO from
+ * @list_name:	Name of property containing gpio specifier(s)
+ * @index:	index of the GPIO
+ * @flags:	optional storage for the OF GPIO flags
+ *
+ * **DEPRECATED** Only kept for out-of-tree drivers still using the legacy
+ * integer GPIO API; new code must use the descriptor API instead.
+ *
+ * Returns:
+ * GPIO number to use with Linux generic GPIO API, or one of the errno
+ * value on the error condition.
+ */
+int of_get_named_gpio_flags(const struct device_node *np, const char *list_name,
+			    int index, enum of_gpio_flags *flags)
+{
+	struct gpio_desc *desc;
+
+	desc = of_get_named_gpiod_flags(np, list_name, index, flags);
+
+	if (IS_ERR(desc))
+		return PTR_ERR(desc);
+	else
+		return desc_to_gpio(desc);
+}
+EXPORT_SYMBOL_GPL(of_get_named_gpio_flags);
 
 /* Converts gpio_lookup_flags into bitmask of GPIO_* values */
 static unsigned long of_convert_gpio_flags(enum of_gpio_flags flags)
