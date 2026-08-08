@@ -19,6 +19,7 @@
 #define AVCS_CMD_ADSP_EVENT_GET_STATE		0x0001290C
 #define AVCS_CMDRSP_ADSP_EVENT_GET_STATE	0x0001290D
 #define AVCS_GET_VERSIONS       0x00012905
+#define AVCS_CMD_LOAD_TOPO_MODULES	0x0001296C
 #define AVCS_GET_VERSIONS_RSP   0x00012906
 #define AVCS_CMD_GET_FWK_VERSION	0x001292c
 #define AVCS_CMDRSP_GET_FWK_VERSION	0x001292d
@@ -56,6 +57,7 @@ struct q6core {
 	uint32_t avcs_state;
 	struct mutex lock;
 	bool resp_received;
+	u32 cmd_status;
 	uint32_t num_services;
 	struct avcs_cmdrsp_get_fwk_version *fwk_version;
 	struct avcs_cmdrsp_get_version *svc_version;
@@ -91,6 +93,10 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
 		case AVCS_CMD_ADSP_EVENT_GET_STATE:
 			if (result->status == ADSP_EUNSUPPORTED)
 				core->get_state_supported = false;
+			core->resp_received = true;
+			break;
+		case AVCS_CMD_LOAD_TOPO_MODULES:
+			core->cmd_status = result->status;
 			core->resp_received = true;
 			break;
 		}
@@ -244,6 +250,52 @@ static bool __q6core_is_adsp_ready(struct q6core *core)
  *
  * Return: zero on success and error code on failure or unsupported
  */
+/*
+ * Ask the ADSP to load the modules making up a topology. The voice path needs
+ * this before VSS_IVOCPROC_CMD_TOPOLOGY_COMMIT: the commit publishes modules
+ * that must already have been loaded, so without it there is nothing to commit.
+ */
+int q6core_load_topo_modules(u32 topology_id)
+{
+	struct avcs_cmd_load_topo_modules {
+		struct apr_hdr hdr;
+		u32 topology_id;
+	} __packed pkt;
+	int rc;
+
+	if (!g_core)
+		return -ENODEV;
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					  APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	pkt.hdr.pkt_size = sizeof(pkt);
+	pkt.hdr.opcode = AVCS_CMD_LOAD_TOPO_MODULES;
+	pkt.topology_id = topology_id;
+
+	mutex_lock(&g_core->lock);
+	rc = apr_send_pkt(g_core->adev, (struct apr_pkt *)&pkt);
+	if (rc < 0)
+		goto out;
+
+	rc = wait_event_timeout(g_core->wait, (g_core->resp_received),
+				msecs_to_jiffies(Q6_READY_TIMEOUT_MS));
+	if (rc > 0 && g_core->resp_received) {
+		g_core->resp_received = false;
+		rc = g_core->cmd_status ? -EIO : 0;
+		if (rc)
+			dev_err(&g_core->adev->dev,
+				"load topo modules %#x rejected: %#x\n",
+				topology_id, g_core->cmd_status);
+	} else {
+		rc = -ETIMEDOUT;
+	}
+out:
+	mutex_unlock(&g_core->lock);
+	return rc;
+}
+EXPORT_SYMBOL_GPL(q6core_load_topo_modules);
+
 int q6core_get_svc_api_info(int svc_id, struct q6core_svc_api_info *ainfo)
 {
 	int i;

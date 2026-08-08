@@ -63,7 +63,6 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
-
 	int ret = 0;
 	int channels, slots, slot_width;
 
@@ -72,37 +71,37 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 	slot_width = 32;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-	  ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0, 0x03,
-	                  slots, slot_width);
-	  if (ret < 0) {
-	          dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
-	                          __func__, ret);
-	          goto end;
-	  }
+		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0, 0x03, slots, slot_width);
+		if (ret < 0) {
+			dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
+				__func__, ret);
+			goto end;
+		}
 
-	  ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
-	                  channels, tdm_slot_offset);
-	  if (ret < 0) {
-	          dev_err(rtd->dev, "%s: failed to set channel map, err:%d\n",
-	                          __func__, ret);
-	          goto end;
-	  }
+		ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
+					  channels, tdm_slot_offset);
+		if (ret < 0) {
+			dev_err(rtd->dev, "%s: failed to set channel map, err:%d\n",
+				__func__, ret);
+			goto end;
+		}
+
+		ret = 0;
 	} else {
-	   ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0xf, 0,
-	                    slots, slot_width);
-	   if (ret < 0) {
-	      dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
-	              __func__, ret);
-	      goto end;
-	    }
+		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0xf, 0, slots, slot_width);
+		if (ret < 0) {
+			dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
+				__func__, ret);
+			goto end;
+		}
 
-	   ret = snd_soc_dai_set_channel_map(cpu_dai, channels,
-	                    tdm_slot_offset, 0, NULL);
-	   if (ret < 0) {
-	      dev_err(rtd->dev, "%s: failed to set channel map, err:%d\n",
-	              __func__, ret);
-	      goto end;
-	   }
+		ret = snd_soc_dai_set_channel_map(cpu_dai, channels,
+					  tdm_slot_offset, 0, NULL);
+		if (ret < 0) {
+			dev_err(rtd->dev, "%s: failed to set channel map, err:%d\n",
+				__func__, ret);
+			goto end;
+		}
 	}
 
 end:
@@ -112,6 +111,7 @@ end:
 static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				     struct snd_pcm_hw_params *params)
 {
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_interval *rate = hw_param_interval(params,
 					SNDRV_PCM_HW_PARAM_RATE);
 	struct snd_interval *channels = hw_param_interval(params,
@@ -121,6 +121,30 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	rate->min = rate->max = 48000;
 	channels->min = channels->max = 2;
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+
+	switch (cpu_dai->id) {
+	case TX_CODEC_DMA_TX_0:
+	case TX_CODEC_DMA_TX_1:
+	case TX_CODEC_DMA_TX_2:
+	case TX_CODEC_DMA_TX_3:
+		/*
+		 * Qualcomm codec TX backends may be driven in mono or stereo.
+		 * For Apollo this matches vendor's TX3 configuration better than
+		 * forcing stereo unconditionally.
+		 */
+		channels->min = 1;
+		break;
+	case VA_CODEC_DMA_TX_0:
+		/*
+		 * Vendor config uses 8 channels for the VA backend; allow a wider
+		 * range here instead of clamping it to stereo.
+		 */
+		channels->min = 1;
+		channels->max = 8;
+		break;
+	default:
+		break;
+	}
 
 	return 0;
 }
@@ -157,7 +181,20 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 			Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
 		snd_soc_dai_set_fmt(cpu_dai, fmt);
-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
+
+		for_each_rtd_codec_dais(rtd, j, codec_dai) {
+			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
+			/* CS35L41_CLKID_SCLK=0: configure PLL to lock on BCLK */
+			snd_soc_dai_set_sysclk(codec_dai, 0, MI2S_BCLK_RATE,
+					       SNDRV_PCM_STREAM_PLAYBACK);
+			snd_soc_component_set_sysclk(codec_dai->component,
+						     0, 0, MI2S_BCLK_RATE,
+						     SND_SOC_CLOCK_IN);
+			if (ret < 0) {
+				dev_err(rtd->dev, "MI2S fmt err:%d\n", ret);
+				return ret;
+			}
+		}
 		break;
 	case QUINARY_MI2S_RX:
 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
@@ -176,6 +213,10 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
 			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
 			snd_soc_dai_set_sysclk(codec_dai, 0, TDM_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+			/* CS35L41_CLKID_SCLK=0: configure PLL to lock on BCLK at TDM rate */
+			snd_soc_component_set_sysclk(codec_dai->component,
+						     0, 0, TDM_BCLK_RATE,
+						     SND_SOC_CLOCK_IN);
 			if (ret < 0) {
 				dev_err(rtd->dev, "TDM fmt err:%d\n", ret);
 				return ret;
@@ -185,12 +226,16 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 	case PRIMARY_TDM_RX_0:
 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_DSP_A;
 		snd_soc_dai_set_sysclk(cpu_dai,
-			Q6AFE_LPASS_CLK_ID_PRI_TDM_IBIT                           ,
+			Q6AFE_LPASS_CLK_ID_PRI_TDM_IBIT,
 			TDM_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
 
 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
 			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
 			snd_soc_dai_set_sysclk(codec_dai, 0, TDM_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+			/* CS35L41_CLKID_SCLK=0: configure PLL to lock on BCLK at TDM rate */
+			snd_soc_component_set_sysclk(codec_dai->component,
+						     0, 0, TDM_BCLK_RATE,
+						     SND_SOC_CLOCK_IN);
 			if (ret < 0) {
 				dev_err(rtd->dev, "TDM fmt err:%d\n", ret);
 				return ret;
@@ -210,10 +255,21 @@ static int sm8250_snd_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *codec_dai;
+	int j;
 
 	switch (cpu_dai->id) {
 	case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
 		return sm8250_tdm_snd_hw_params(substream, params);
+	case TERTIARY_MI2S_RX:
+		/* Assign I2S channel slots: codec 0 = L (slot 0), codec 1 = R (slot 1) */
+		for_each_rtd_codec_dais(rtd, j, codec_dai) {
+			unsigned int codec_slot[1] = {j};
+
+			snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
+						    1, codec_slot);
+		}
+		return 0;
 	}
 
 	return 0;

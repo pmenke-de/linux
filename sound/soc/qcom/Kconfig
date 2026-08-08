@@ -99,6 +99,29 @@ config SND_SOC_QDSP6_ASM_DAI
 	select SND_SOC_COMPRESS
 	tristate
 
+config SND_SOC_QDSP6_Q6VOICE_DAI
+	tristate
+
+config SND_SOC_QDSP6_Q6VOICE_MHI
+	tristate "QDSP6 Q6Voice mailbox bridge for PCIe/MHI modems"
+	depends on SND_SOC_QDSP6_Q6VOICE && MHI_BUS
+	help
+	  Enable call audio on boards whose modem is attached over PCIe rather
+	  than built into the SoC. The modem and the ADSP exchange voice frames
+	  through a shared buffer, but reach it through different IOMMUs, so
+	  the AP has to map it into both and tell the ADSP about it. Say Y here
+	  for a SDX55 or similar sitting next to the SoC.
+
+config SND_SOC_QDSP6_Q6VOICE
+	tristate "QDSP6 Q6Voice audio driver"
+	depends on SND_SOC_QDSP6
+	select SND_SOC_QDSP6_Q6VOICE_DAI
+	help
+	  Enable the ADSP voice session services (MVM/CVS/CVP) used for
+	  circuit-switched call audio. The ADSP owns the voice path; this
+	  only creates and tears down the session over APR, exposing a
+	  CS-VOICE PCM that userspace opens for the duration of a call.
+
 config SND_SOC_QDSP6_APM_DAI
 	tristate
 	select SND_SOC_COMPRESS

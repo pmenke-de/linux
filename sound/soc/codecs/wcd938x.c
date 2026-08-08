@@ -1108,6 +1108,23 @@ static int wcd938x_tx_swr_ctrl(struct snd_soc_dapm_widget *w,
 			if (test_bit(WCD_ADC4, &wcd938x->status_mask))
 				mode |= tx_mode_bit[wcd938x->tx_mode[WCD_ADC4]];
 
+			/*
+			 * Vendor carries separate ADC mode state after TX hold-clear
+			 * handling. Mainline lacks that notifier path, so when this
+			 * event runs before the ADC status bits are observable, fall
+			 * back to the specific ADC widget being powered up.
+			 */
+			if (!mode) {
+				if (strnstr(w->name, "ADC1", sizeof("ADC1")))
+					mode = tx_mode_bit[wcd938x->tx_mode[WCD_ADC1]];
+				else if (strnstr(w->name, "ADC2", sizeof("ADC2")))
+					mode = tx_mode_bit[wcd938x->tx_mode[WCD_ADC2]];
+				else if (strnstr(w->name, "ADC3", sizeof("ADC3")))
+					mode = tx_mode_bit[wcd938x->tx_mode[WCD_ADC3]];
+				else if (strnstr(w->name, "ADC4", sizeof("ADC4")))
+					mode = tx_mode_bit[wcd938x->tx_mode[WCD_ADC4]];
+			}
+
 			if (mode != 0) {
 				for (i = 0; i < ADC_MODE_ULP2; i++) {
 					if (mode & (1 << i)) {
@@ -1384,6 +1401,14 @@ static int wcd938x_micbias_control(struct snd_soc_component *component,
 			snd_soc_component_write_field(component,
 			       WCD938X_DIGITAL_CDC_ANA_TX_CLK_CTL,
 			       WCD938X_TX_SC_CLK_EN_MASK, 1);
+			snd_soc_component_write_field(component,
+				WCD938X_MICB1_TEST_CTL_2, BIT(0), BIT(0));
+			snd_soc_component_write_field(component,
+				WCD938X_MICB2_TEST_CTL_2, BIT(0), BIT(0));
+			snd_soc_component_write_field(component,
+				WCD938X_MICB3_TEST_CTL_2, BIT(0), BIT(0));
+			snd_soc_component_write_field(component,
+				WCD938X_MICB4_TEST_CTL_2, BIT(0), BIT(0));
 
 			snd_soc_component_write_field(component, micb_reg,
 						      WCD938X_MICB_EN_MASK,
@@ -2656,6 +2681,14 @@ static const struct snd_soc_dapm_widget wcd938x_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Analog Mic3", NULL),
 	SND_SOC_DAPM_MIC("Analog Mic4", NULL),
 	SND_SOC_DAPM_MIC("Analog Mic5", NULL),
+	SND_SOC_DAPM_INPUT("DMIC1 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC2 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC3 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC4 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC5 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC6 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC7 Pin"),
+	SND_SOC_DAPM_INPUT("DMIC8 Pin"),
 
 	/*tx widgets*/
 	SND_SOC_DAPM_ADC_E("ADC1", NULL, SND_SOC_NOPM, 0, 0,
@@ -2905,27 +2938,35 @@ static const struct snd_soc_dapm_route wcd938x_audio_map[] = {
 
 	{"DMIC1_OUTPUT", NULL, "DMIC1_MIXER"},
 	{"DMIC1_MIXER", "Switch", "DMIC1"},
+	{"DMIC1", NULL, "DMIC1 Pin"},
 
 	{"DMIC2_OUTPUT", NULL, "DMIC2_MIXER"},
 	{"DMIC2_MIXER", "Switch", "DMIC2"},
+	{"DMIC2", NULL, "DMIC2 Pin"},
 
 	{"DMIC3_OUTPUT", NULL, "DMIC3_MIXER"},
 	{"DMIC3_MIXER", "Switch", "DMIC3"},
+	{"DMIC3", NULL, "DMIC3 Pin"},
 
 	{"DMIC4_OUTPUT", NULL, "DMIC4_MIXER"},
 	{"DMIC4_MIXER", "Switch", "DMIC4"},
+	{"DMIC4", NULL, "DMIC4 Pin"},
 
 	{"DMIC5_OUTPUT", NULL, "DMIC5_MIXER"},
 	{"DMIC5_MIXER", "Switch", "DMIC5"},
+	{"DMIC5", NULL, "DMIC5 Pin"},
 
 	{"DMIC6_OUTPUT", NULL, "DMIC6_MIXER"},
 	{"DMIC6_MIXER", "Switch", "DMIC6"},
+	{"DMIC6", NULL, "DMIC6 Pin"},
 
 	{"DMIC7_OUTPUT", NULL, "DMIC7_MIXER"},
 	{"DMIC7_MIXER", "Switch", "DMIC7"},
+	{"DMIC7", NULL, "DMIC7 Pin"},
 
 	{"DMIC8_OUTPUT", NULL, "DMIC8_MIXER"},
 	{"DMIC8_MIXER", "Switch", "DMIC8"},
+	{"DMIC8", NULL, "DMIC8 Pin"},
 
 	{"IN1_HPHL", NULL, "VDD_BUCK"},
 	{"IN1_HPHL", NULL, "CLS_H_PORT"},
@@ -3489,6 +3530,10 @@ static int wcd938x_probe(struct platform_device *pdev)
 	mutex_init(&wcd938x->micb_lock);
 	wcd938x->common.dev = dev;
 	wcd938x->common.max_bias = 4;
+	wcd938x->tx_mode[WCD_ADC1] = ADC_MODE_NORMAL;
+	wcd938x->tx_mode[WCD_ADC2] = ADC_MODE_NORMAL;
+	wcd938x->tx_mode[WCD_ADC3] = ADC_MODE_NORMAL;
+	wcd938x->tx_mode[WCD_ADC4] = ADC_MODE_NORMAL;
 
 	ret = wcd938x_populate_dt_data(wcd938x, dev);
 	if (ret)
