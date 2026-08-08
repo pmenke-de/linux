@@ -264,6 +264,19 @@ void dw_pcie_msi_init(struct dw_pcie_rp *pp)
 	/* Program the msi_data */
 	dw_pcie_writel_dbi(pci, PCIE_MSI_ADDR_LO, lower_32_bits(msi_target));
 	dw_pcie_writel_dbi(pci, PCIE_MSI_ADDR_HI, upper_32_bits(msi_target));
+
+	/* Read back and verify iMSI-RX programming */
+	{
+		u32 rb_lo = dw_pcie_readl_dbi(pci, PCIE_MSI_ADDR_LO);
+		u32 rb_hi = dw_pcie_readl_dbi(pci, PCIE_MSI_ADDR_HI);
+		u32 rb_en = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_ENABLE);
+		u32 rb_mask = dw_pcie_readl_dbi(pci, PCIE_MSI_INTR0_MASK);
+
+		dev_info(pci->dev,
+			 "MSI: target=0x%llx vectors=%d ctrls=%d readback=0x%08x%08x en=0x%x mask=0x%x\n",
+			 msi_target, pp->num_vectors, num_ctrls,
+			 rb_hi, rb_lo, rb_en, rb_mask);
+	}
 }
 EXPORT_SYMBOL_GPL(dw_pcie_msi_init);
 

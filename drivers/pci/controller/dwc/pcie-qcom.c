@@ -44,6 +44,7 @@
 /* PARF registers */
 #define PARF_SYS_CTRL				0x00
 #define PARF_PM_CTRL				0x20
+#define PARF_PM_STTS				0x24
 #define PARF_PCS_DEEMPH				0x34
 #define PARF_PCS_SWING				0x38
 #define PARF_PHY_CTRL				0x40
@@ -97,6 +98,9 @@
 
 /* PARF_PM_CTRL register fields */
 #define REQ_NOT_ENTR_L1				BIT(5)
+
+/* PARF_PM_STTS register fields */
+#define PM_STTS_LINKST_IN_L23			BIT(5)
 
 /* PARF_PCS_DEEMPH register fields */
 #define PCS_DEEMPH_TX_DEEMPH_GEN1(x)		FIELD_PREP(GENMASK(21, 16), x)
@@ -1322,6 +1326,200 @@ static enum dw_pcie_ltssm qcom_pcie_get_ltssm(struct dw_pcie *pci)
 	return (enum dw_pcie_ltssm)FIELD_GET(PARF_LTSSM_STATE_MASK, val);
 }
 
+static void qcom_pcie_phy_power_off(struct qcom_pcie *pcie);
+static int qcom_pcie_phy_power_on(struct qcom_pcie *pcie);
+
+/**
+ * qcom_pcie_retrain_link() - Full RC reset and retrain the PCIe link
+ * @pdev: PCI endpoint device whose link needs retraining
+ *
+ * For external modems (e.g. SDX55M on SM8250) the modem may drop the PCIe
+ * link during its SBL→AMSS boot transition.  This function performs a full
+ * RC-side reset (PHY, clocks, core, PARF, ATU) without toggling PERST# so
+ * the modem is not cold-reset.  Waits up to 10 s for link.  Returns 0 on
+ * success.
+ */
+int qcom_pcie_retrain_link(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *host = pci_find_host_bridge(pdev->bus);
+	struct qcom_pcie *pcie = dev_get_drvdata(host->dev.parent);
+	struct dw_pcie *pci = pcie->pci;
+	u32 val;
+	int retries, ret;
+
+	dev_info(pci->dev, "retraining PCIe link for %s\n", dev_name(&pdev->dev));
+
+	/*
+	 * The modem has rebooted itself (SBL→AMSS) and dropped the PCIe
+	 * link.  A simple LTSSM bounce is not enough — the RC core needs
+	 * a full reset cycle.  We must NOT toggle PERST# as that would
+	 * cold-reset the modem back to PBL.  After the core reset we
+	 * re-program the DWC ATU/MSI via dw_pcie_setup_rc().
+	 */
+
+	/* 1. Disable LTSSM */
+	val = readl(pcie->parf + PARF_LTSSM);
+	val &= ~LTSSM_EN;
+	writel(val, pcie->parf + PARF_LTSSM);
+
+	/* 2. RC-only teardown: PHY off, clocks/resets off (no PERST#) */
+	qcom_pcie_phy_power_off(pcie);
+	pcie->cfg->ops->deinit(pcie);
+
+	msleep(5);
+
+	/* 3. RC re-init: regulators, clocks, core reset, PARF config */
+	ret = pcie->cfg->ops->init(pcie);
+	if (ret) {
+		dev_err(pci->dev, "init failed: %d\n", ret);
+		return ret;
+	}
+
+	/* 4. PHY power on */
+	ret = qcom_pcie_phy_power_on(pcie);
+	if (ret) {
+		dev_err(pci->dev, "PHY power-on failed: %d\n", ret);
+		return ret;
+	}
+
+	/* 5. Post-init PARF config */
+	if (pcie->cfg->ops->post_init) {
+		ret = pcie->cfg->ops->post_init(pcie);
+		if (ret) {
+			dev_err(pci->dev, "post_init failed: %d\n", ret);
+			return ret;
+		}
+	}
+
+	/* 6. Re-setup DWC RC: ATU, MSI, bus numbers (lost during core reset) */
+	ret = dw_pcie_setup_rc(&pci->pp);
+	if (ret) {
+		dev_err(pci->dev, "RC setup failed: %d\n", ret);
+		return ret;
+	}
+
+	/* 7. Re-enable LTSSM */
+	if (pcie->cfg->ops->ltssm_enable)
+		pcie->cfg->ops->ltssm_enable(pcie);
+
+	/* 8. Wait for link — generous 10s timeout for modem AMSS boot */
+	for (retries = 0; retries < 100; retries++) {
+		if (dw_pcie_link_up(pci))
+			break;
+		msleep(100);
+	}
+
+	if (!dw_pcie_link_up(pci)) {
+		dev_err(pci->dev, "link retrain failed: link not up after 10s\n");
+		return -ETIMEDOUT;
+	}
+
+	dev_info(pci->dev, "link retrained in %d ms\n", retries * 100);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_retrain_link);
+
+/**
+ * qcom_pcie_l23_ready() - Send PME_Turn_Off and wait for link L23_Ready
+ * @pdev: PCI endpoint whose link should transition to L2/L3
+ *
+ * Mirrors the minimum of vendor msm_pcie_pm_suspend(): writes PME_Turn_Off
+ * via ELBI_SYS_CTRL BIT(4), then polls PARF_PM_STTS BIT(5) for L23_Ready.
+ * This lets the endpoint (e.g. SDX55 modem) observe a clean link transition
+ * instead of a raw D3hot cycle.  Does NOT touch clocks or pinctrl — the
+ * caller still controls device power-down.
+ */
+int qcom_pcie_l23_ready(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *host = pci_find_host_bridge(pdev->bus);
+	struct qcom_pcie *pcie = dev_get_drvdata(host->dev.parent);
+	struct dw_pcie *pci = pcie->pci;
+	u32 val;
+	int ret;
+
+	writel(ELBI_SYS_CTRL_PME_TURNOFF_MSG, pcie->elbi + ELBI_SYS_CTRL);
+	/* flush posted write */
+	readl(pcie->elbi + ELBI_SYS_CTRL);
+
+	ret = readl_poll_timeout(pcie->parf + PARF_PM_STTS, val,
+				 val & PM_STTS_LINKST_IN_L23,
+				 1000, 100000);
+	if (ret) {
+		dev_warn(pci->dev,
+			 "L23_Ready not reached (PARF_PM_STTS=0x%08x)\n",
+			 readl(pcie->parf + PARF_PM_STTS));
+		return -ETIMEDOUT;
+	}
+
+	dev_info(pci->dev, "link entered L23_Ready\n");
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_l23_ready);
+
+/**
+ * qcom_pcie_perst_toggle() - Assert/deassert PERST# to cold-reset the endpoint
+ * @pdev: PCI endpoint whose root port's PERST# should be toggled
+ *
+ * Asserts PERST# for at least 100 ms, then deasserts it.  This cold-resets
+ * the endpoint (e.g. an external modem) back to its PBL/boot-ROM state so
+ * the host can re-load firmware via BHI.  The caller must have already
+ * stopped all MHI traffic and disabled the PCI device.
+ *
+ * Return: 0 on success, negative error code on failure
+ */
+int qcom_pcie_perst_toggle(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *host = pci_find_host_bridge(pdev->bus);
+	struct qcom_pcie *pcie = dev_get_drvdata(host->dev.parent);
+	struct dw_pcie *pci = pcie->pci;
+	u32 val;
+	int retries;
+
+	dev_info(pci->dev, "asserting PERST# to cold-reset %s\n",
+		 dev_name(&pdev->dev));
+
+	/*
+	 * Disable LTSSM so the DWC controller does not try to train the
+	 * link while the endpoint is held in reset.  On some SM8250
+	 * hardware configurations a stale LTSSM will not re-detect the
+	 * endpoint after PERST# deassertion unless it is bounced.
+	 */
+	val = readl(pcie->parf + PARF_LTSSM);
+	val &= ~LTSSM_EN;
+	writel(val, pcie->parf + PARF_LTSSM);
+
+	qcom_pcie_perst_assert(pcie);
+
+	/* Ensure PERST# is asserted for at least 100 ms */
+	msleep(PCIE_T_PVPERL_MS + 50);
+
+	qcom_pcie_perst_deassert(pcie);
+
+	dev_info(pci->dev, "PERST# deasserted, re-enabling LTSSM\n");
+
+	/* Re-enable LTSSM so the controller can train the link */
+	val = readl(pcie->parf + PARF_LTSSM);
+	val |= LTSSM_EN;
+	writel(val, pcie->parf + PARF_LTSSM);
+
+	/* Wait up to 10 s for the endpoint to train */
+	for (retries = 0; retries < 100; retries++) {
+		if (dw_pcie_link_up(pci))
+			break;
+		msleep(100);
+	}
+
+	if (!dw_pcie_link_up(pci)) {
+		dev_err(pci->dev, "PERST# toggle: link not up after 10 s\n");
+		return -ETIMEDOUT;
+	}
+
+	dev_info(pci->dev, "PERST# toggle: link up in %d ms\n",
+		 100 + retries * 100);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_perst_toggle);
+
 static void qcom_pcie_phy_power_off(struct qcom_pcie *pcie)
 {
 	struct qcom_pcie_port *port;
@@ -1442,6 +1640,71 @@ static void qcom_pcie_host_deinit(struct dw_pcie_rp *pp)
 	qcom_pcie_phy_power_off(pcie);
 	pcie->cfg->ops->deinit(pcie);
 }
+
+/*
+ * Rebuild a link that has gone down, e.g. because the modem behind it reset
+ * itself.  This is the same teardown/bring-up pair the controller's own
+ * resume_noirq path uses, rather than a hand-rolled sequence: host_deinit()
+ * asserts PERST#, powers the PHY down and releases clocks/resets, and
+ * host_init() brings all of that back and deasserts PERST#.
+ *
+ * Only safe while the link is already down.  Turning the resources off under
+ * an active device triggers access violations when anything subsequently
+ * touches its config space -- which is exactly how earlier attempts at this
+ * hung the AP -- so refuse rather than risk it.
+ */
+int qcom_pcie_relink(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *host = pci_find_host_bridge(pdev->bus);
+	struct qcom_pcie *pcie = dev_get_drvdata(host->dev.parent);
+	struct dw_pcie *pci = pcie->pci;
+	int ret;
+
+	if (dw_pcie_link_up(pci)) {
+		dev_info(pci->dev, "link already up, not relinking\n");
+		return 0;
+	}
+
+	dev_info(pci->dev, "relinking %s: controller deinit/init\n",
+		 dev_name(&pdev->dev));
+
+	qcom_pcie_host_deinit(&pci->pp);
+
+	ret = qcom_pcie_host_init(&pci->pp);
+	if (ret) {
+		dev_err(pci->dev, "relink: host init failed: %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * host_init only restores the Qualcomm side -- clocks, PHY, resets,
+	 * PARF. Everything the DWC core programs lives in DBI and was lost
+	 * with the controller, so it has to be rewritten before the link is
+	 * of any use: bus numbers, and above all the iATU, without which the
+	 * endpoint's reads of host memory go nowhere even though config
+	 * accesses keep working (those program the outbound ATU per access).
+	 *
+	 * This is the same order dw_pcie_resume_noirq() uses.
+	 */
+	dw_pcie_setup_rc(&pci->pp);
+
+	ret = dw_pcie_start_link(pci);
+	if (ret) {
+		dev_err(pci->dev, "relink: could not start link: %d\n", ret);
+		return ret;
+	}
+
+	ret = dw_pcie_wait_for_link(pci);
+	if (ret) {
+		dev_err(pci->dev, "relink: link did not come up: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(pci->dev, "relink: link up\n");
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_relink);
 
 static void qcom_pcie_host_post_init(struct dw_pcie_rp *pp)
 {
