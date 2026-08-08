@@ -115,42 +115,68 @@ int ipa_setup(struct ipa *ipa)
 	struct device *dev = ipa->dev;
 	int ret;
 
+	dev_info(dev, "ipa_setup: gsi_setup begin\n");
 	ret = gsi_setup(&ipa->gsi);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "ipa_setup: gsi_setup failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(dev, "ipa_setup: gsi_setup done\n");
 
+	dev_info(dev, "ipa_setup: endpoint_setup begin\n");
 	ipa_endpoint_setup(ipa);
+	dev_info(dev, "ipa_setup: endpoint_setup done\n");
 
 	/* We need to use the AP command TX endpoint to perform other
 	 * initialization, so we enable first.
 	 */
 	command_endpoint = ipa->name_map[IPA_ENDPOINT_AP_COMMAND_TX];
+	dev_info(dev, "ipa_setup: enabling command endpoint\n");
 	ret = ipa_endpoint_enable_one(command_endpoint);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "ipa_setup: command endpoint enable failed: %d\n", ret);
 		goto err_endpoint_teardown;
+	}
 
+	dev_info(dev, "ipa_setup: mem_setup begin\n");
 	ret = ipa_mem_setup(ipa);	/* No matching teardown required */
-	if (ret)
+	if (ret) {
+		dev_err(dev, "ipa_setup: mem_setup failed: %d\n", ret);
 		goto err_command_disable;
+	}
+	dev_info(dev, "ipa_setup: mem_setup done\n");
 
+	dev_info(dev, "ipa_setup: table_setup begin\n");
 	ret = ipa_table_setup(ipa);	/* No matching teardown required */
-	if (ret)
+	if (ret) {
+		dev_err(dev, "ipa_setup: table_setup failed: %d\n", ret);
 		goto err_command_disable;
+	}
+	dev_info(dev, "ipa_setup: table_setup done\n");
 
 	/* Enable the exception handling endpoint, and tell the hardware
 	 * to use it by default.
 	 */
 	exception_endpoint = ipa->name_map[IPA_ENDPOINT_AP_LAN_RX];
+	dev_info(dev, "ipa_setup: enabling exception endpoint\n");
 	ret = ipa_endpoint_enable_one(exception_endpoint);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "ipa_setup: exception endpoint enable failed: %d\n", ret);
 		goto err_command_disable;
+	}
 
 	ipa_endpoint_default_route_set(ipa, exception_endpoint->endpoint_id);
+	dev_info(dev, "ipa_setup: default route set to endpoint %u\n",
+		 exception_endpoint->endpoint_id);
 
 	/* We're all set.  Now prepare for communication with the modem */
+	dev_info(dev, "ipa_setup: qmi_setup begin\n");
 	ret = ipa_qmi_setup(ipa);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "ipa_setup: qmi_setup failed: %d\n", ret);
 		goto err_default_route_clear;
+	}
+	dev_info(dev, "ipa_setup: qmi_setup done\n");
 
 	ipa->setup_complete = true;
 
@@ -599,6 +625,8 @@ static int ipa_firmware_load(struct device *dev)
 			ret);
 		return ret;
 	}
+	dev_info(dev, "IPA firmware memory resource start=%pa end=%pa\n",
+		 &res.start, &res.end);
 
 	/* Use name from DTB if specified; use default for *any* error */
 	ret = of_property_read_string(dev->of_node, "firmware-name", &path);
@@ -608,14 +636,18 @@ static int ipa_firmware_load(struct device *dev)
 		path = IPA_FW_PATH_DEFAULT;
 	}
 
+	dev_info(dev, "requesting IPA firmware \"%s\"\n", path);
 	ret = request_firmware(&fw, path, dev);
 	if (ret) {
 		dev_err(dev, "error %d requesting \"%s\"\n", ret, path);
 		return ret;
 	}
+	dev_info(dev, "requested IPA firmware \"%s\" size=%zu\n", path, fw->size);
 
 	phys = res.start;
 	size = (size_t)resource_size(&res);
+	dev_info(dev, "remapping IPA firmware memory phys=%pa size=%zd\n",
+		 &phys, size);
 	virt = memremap(phys, size, MEMREMAP_WC);
 	if (!virt) {
 		dev_err(dev, "unable to remap firmware memory\n");
@@ -623,11 +655,19 @@ static int ipa_firmware_load(struct device *dev)
 		goto out_release_firmware;
 	}
 
+	dev_info(dev, "loading IPA firmware \"%s\" with PAS id %u\n", path, IPA_PAS_ID);
 	ret = qcom_mdt_load(dev, fw, path, IPA_PAS_ID, virt, phys, size, NULL);
 	if (ret)
 		dev_err(dev, "error %d loading \"%s\"\n", ret, path);
-	else if ((ret = qcom_scm_pas_auth_and_reset(IPA_PAS_ID)))
-		dev_err(dev, "error %d authenticating \"%s\"\n", ret, path);
+	else {
+		dev_info(dev, "loaded IPA firmware \"%s\"; authenticating and resetting PAS id %u\n",
+			 path, IPA_PAS_ID);
+		ret = qcom_scm_pas_auth_and_reset(IPA_PAS_ID);
+		if (ret)
+			dev_err(dev, "error %d authenticating \"%s\"\n", ret, path);
+		else
+			dev_info(dev, "authenticated and reset IPA firmware \"%s\"\n", path);
+	}
 
 	memunmap(virt);
 out_release_firmware:
@@ -651,6 +691,10 @@ static const struct of_device_id ipa_match[] = {
 	},
 	{
 		.compatible	= "qcom,sdx55-ipa",
+		.data		= &ipa_data_v4_5,
+	},
+	{
+		.compatible	= "qcom,sm8250-ipa",
 		.data		= &ipa_data_v4_5,
 	},
 	{
@@ -897,15 +941,22 @@ static int ipa_probe(struct platform_device *pdev)
 
 	if (loader == IPA_LOADER_SELF) {
 		/* The AP is loading GSI firmware; do so now */
+		dev_info(dev, "IPA GSI loader is self; loading firmware from AP\n");
 		ret = ipa_firmware_load(dev);
-		if (ret)
+		if (ret) {
+			dev_err(dev, "IPA firmware load failed: %d\n", ret);
 			goto err_deconfig;
+		}
+		dev_info(dev, "IPA firmware load finished\n");
 	} /* Otherwise loader == IPA_LOADER_SKIP */
 
 	/* GSI firmware is loaded; proceed to setup */
+	dev_info(dev, "starting IPA setup\n");
 	ret = ipa_setup(ipa);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "IPA setup failed: %d\n", ret);
 		goto err_deconfig;
+	}
 done:
 	(void)pm_runtime_put_autosuspend(dev);
 

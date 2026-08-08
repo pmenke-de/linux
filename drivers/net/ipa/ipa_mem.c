@@ -85,12 +85,13 @@ int ipa_mem_setup(struct ipa *ipa)
 	u16 size;
 	u32 val;
 
-	/* Get a transaction to define the header memory region and to zero
-	 * the processing context and modem memory regions.
+	/* Vendor Kona IPA setup sends HDR_INIT_LOCAL as its own immediate
+	 * command before issuing DMA_SHARED_MEM zeroing commands.  Keep the
+	 * same ordering here while debugging SM8250 APQ bring-up.
 	 */
-	trans = ipa_cmd_trans_alloc(ipa, 4);
+	trans = ipa_cmd_trans_alloc(ipa, 1);
 	if (!trans) {
-		dev_err(ipa->dev, "no transaction for memory setup\n");
+		dev_err(ipa->dev, "no transaction for header memory setup\n");
 		return -EBUSY;
 	}
 
@@ -105,13 +106,28 @@ int ipa_mem_setup(struct ipa *ipa)
 	if (mem)
 		size += mem->size;
 
+	dev_info(ipa->dev,
+		 "ipa_mem_setup: HDR_INIT_LOCAL offset=0x%08x size=0x%04x dma=%pad\n",
+		 offset + ipa->mem_offset, size, &addr);
 	ipa_cmd_hdr_init_local_add(trans, offset, size, addr);
+	dev_info(ipa->dev, "ipa_mem_setup: waiting for HDR_INIT_LOCAL completion\n");
+	gsi_trans_commit_wait(trans);
+	dev_info(ipa->dev, "ipa_mem_setup: HDR_INIT_LOCAL completed\n");
 
+	trans = ipa_cmd_trans_alloc(ipa, 3);
+	if (!trans) {
+		dev_err(ipa->dev, "no transaction for memory zero setup\n");
+		return -EBUSY;
+	}
+
+	dev_info(ipa->dev, "ipa_mem_setup: zero modem/app proc ctx and modem memory\n");
 	ipa_mem_zero_region_add(trans, IPA_MEM_MODEM_PROC_CTX);
 	ipa_mem_zero_region_add(trans, IPA_MEM_AP_PROC_CTX);
 	ipa_mem_zero_region_add(trans, IPA_MEM_MODEM);
 
+	dev_info(ipa->dev, "ipa_mem_setup: waiting for memory zero completion\n");
 	gsi_trans_commit_wait(trans);
+	dev_info(ipa->dev, "ipa_mem_setup: memory zero completed\n");
 
 	/* Tell the hardware where the processing context area is located */
 	mem = ipa_mem_find(ipa, IPA_MEM_MODEM_PROC_CTX);
@@ -119,6 +135,9 @@ int ipa_mem_setup(struct ipa *ipa)
 
 	reg = ipa_reg(ipa, LOCAL_PKT_PROC_CNTXT);
 	val = reg_encode(reg, IPA_BASE_ADDR, offset);
+	dev_info(ipa->dev,
+		 "ipa_mem_setup: LOCAL_PKT_PROC_CNTXT offset=0x%08x val=0x%08x\n",
+		 offset, val);
 	iowrite32(val, ipa->reg_virt + reg_offset(reg));
 
 	return 0;

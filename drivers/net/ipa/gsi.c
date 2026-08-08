@@ -2070,28 +2070,42 @@ int gsi_setup(struct gsi *gsi)
 	int ret;
 
 	/* Here is where we first touch the GSI hardware */
+	dev_info(gsi->dev, "gsi_setup: reading GSI_STATUS\n");
 	reg = gsi_reg(gsi, GSI_STATUS);
 	val = ioread32(gsi->virt + reg_offset(reg));
 	if (!(val & reg_bit(reg, ENABLED))) {
 		dev_err(gsi->dev, "GSI has not been enabled\n");
 		return -EIO;
 	}
+	dev_info(gsi->dev, "gsi_setup: GSI_STATUS=0x%08x enabled\n", val);
 
+	dev_info(gsi->dev, "gsi_setup: irq_setup begin\n");
 	ret = gsi_irq_setup(gsi);
-	if (ret)
+	if (ret) {
+		dev_err(gsi->dev, "gsi_setup: irq_setup failed: %d\n", ret);
 		return ret;
+	}
+	dev_info(gsi->dev, "gsi_setup: irq_setup done\n");
 
+	dev_info(gsi->dev, "gsi_setup: ring_setup begin\n");
 	ret = gsi_ring_setup(gsi);	/* No matching teardown required */
-	if (ret)
+	if (ret) {
+		dev_err(gsi->dev, "gsi_setup: ring_setup failed: %d\n", ret);
 		goto err_irq_teardown;
+	}
+	dev_info(gsi->dev, "gsi_setup: ring_setup done\n");
 
 	/* Initialize the error log */
 	reg = gsi_reg(gsi, ERROR_LOG);
 	iowrite32(0, gsi->virt + reg_offset(reg));
 
+	dev_info(gsi->dev, "gsi_setup: channel_setup begin\n");
 	ret = gsi_channel_setup(gsi);
-	if (ret)
+	if (ret) {
+		dev_err(gsi->dev, "gsi_setup: channel_setup failed: %d\n", ret);
 		goto err_irq_teardown;
+	}
+	dev_info(gsi->dev, "gsi_setup: channel_setup done\n");
 
 	return 0;
 

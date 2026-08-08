@@ -31,6 +31,8 @@ struct ipa_qmi {
 
 	/* Information used for the client handle */
 	struct sockaddr_qrtr modem_sq;
+	struct sockaddr_qrtr modem_sq_alt;
+	bool modem_sq_alt_valid;
 	struct work_struct init_driver_work;
 
 	/* Flags used in negotiating readiness */

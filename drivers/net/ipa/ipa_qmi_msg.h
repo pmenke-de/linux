@@ -19,6 +19,9 @@
 #define IPA_QMI_INIT_DRIVER		0x21	/* AP -> modem request */
 #define IPA_QMI_INIT_COMPLETE		0x22	/* AP -> modem indication */
 #define IPA_QMI_DRIVER_INIT_COMPLETE	0x35	/* modem -> AP request */
+#define IPA_QMI_MHI_CLK_VOTE		0x3b	/* modem -> AP request */
+#define IPA_QMI_MHI_READY		0x3c	/* AP -> modem indication */
+#define IPA_QMI_MHI_ALLOC_CHANNEL	0x3d	/* modem -> AP request */
 
 /* The maximum size required for message types.  These sizes include
  * the message data, along with type (1 byte) and length (2 byte)
@@ -32,10 +35,18 @@
 #define IPA_QMI_INIT_COMPLETE_IND_SZ		7	/* <- server handle */
 #define IPA_QMI_DRIVER_INIT_COMPLETE_REQ_SZ	4	/* -> server handle */
 #define IPA_QMI_DRIVER_INIT_COMPLETE_RSP_SZ	7	/* <- server handle */
+#define IPA_QMI_MHI_CLK_VOTE_REQ_SZ		18	/* -> server handle */
+#define IPA_QMI_MHI_CLK_VOTE_RSP_SZ		7	/* <- server handle */
+#define IPA_QMI_MHI_READY_IND_SZ		123	/* <- server handle */
+#define IPA_QMI_MHI_ALLOC_CHANNEL_REQ_SZ	808	/* -> server handle */
+#define IPA_QMI_MHI_ALLOC_CHANNEL_RSP_SZ	23	/* <- server handle */
 
 /* Maximum size of messages we expect the AP to receive (max of above) */
-#define IPA_QMI_SERVER_MAX_RCV_SZ		8
+#define IPA_QMI_SERVER_MAX_RCV_SZ		808
 #define IPA_QMI_CLIENT_MAX_RCV_SZ		25
+
+#define IPA_QMI_REMOTE_MHI_CHANNELS_MAX		2
+#define IPA_QMI_REMOTE_MHI_MEM_MAPS_MAX		2
 
 /* Request message for the IPA_QMI_INDICATION_REGISTER request */
 struct ipa_indication_register_req {
@@ -247,6 +258,99 @@ struct ipa_init_modem_driver_rsp {
 	u8				modem_driver_init_pending;
 };
 
+struct ipa_mhi_ch_init_info {
+	u8 ch_id;
+	u8 er_id;
+	u32 ch_doorbell_addr;
+	u32 er_doorbell_addr;
+	u32 direction_type;
+};
+
+struct ipa_mhi_smmu_info {
+	u64 iova_ctl_base_addr;
+	u64 iova_ctl_size;
+	u64 iova_data_base_addr;
+	u64 iova_data_size;
+};
+
+struct ipa_mhi_ready_ind {
+	u32 ch_info_arr_len;
+	struct ipa_mhi_ch_init_info ch_info_arr[IPA_QMI_REMOTE_MHI_CHANNELS_MAX];
+	u8 smmu_info_valid;
+	struct ipa_mhi_smmu_info smmu_info;
+};
+
+enum ipa_mhi_brst_mode {
+	IPA_MHI_BRST_MODE_DEFAULT = 0,
+	IPA_MHI_BRST_MODE_ENABLED = 1,
+	IPA_MHI_BRST_MODE_DISABLED = 2,
+};
+
+struct ipa_mhi_tr_info {
+	u8 ch_id;
+	u16 poll_cfg;
+	u32 brst_mode_type;
+	u64 ring_iova;
+	u64 ring_len;
+	u64 rp;
+	u64 wp;
+};
+
+struct ipa_mhi_er_info {
+	u8 er_id;
+	u32 intmod_cycles;
+	u32 intmod_count;
+	u32 msi_addr;
+	u64 ring_iova;
+	u64 ring_len;
+	u64 rp;
+	u64 wp;
+};
+
+struct ipa_mhi_mem_addr_info {
+	u64 pa;
+	u64 iova;
+	u64 size;
+};
+
+struct ipa_mhi_alloc_channel_req {
+	u32 tr_info_arr_len;
+	struct ipa_mhi_tr_info tr_info_arr[IPA_QMI_REMOTE_MHI_CHANNELS_MAX];
+	u32 er_info_arr_len;
+	struct ipa_mhi_er_info er_info_arr[IPA_QMI_REMOTE_MHI_CHANNELS_MAX];
+	u32 ctrl_addr_map_info_len;
+	struct ipa_mhi_mem_addr_info
+		ctrl_addr_map_info[IPA_QMI_REMOTE_MHI_MEM_MAPS_MAX];
+	u32 data_addr_map_info_len;
+	struct ipa_mhi_mem_addr_info
+		data_addr_map_info[IPA_QMI_REMOTE_MHI_MEM_MAPS_MAX];
+};
+
+struct ipa_mhi_ch_alloc_resp {
+	u8 ch_id;
+	u8 is_success;
+};
+
+struct ipa_mhi_alloc_channel_rsp {
+	struct qmi_response_type_v01 rsp;
+	u8 alloc_resp_arr_valid;
+	u32 alloc_resp_arr_len;
+	struct ipa_mhi_ch_alloc_resp
+		alloc_resp_arr[IPA_QMI_REMOTE_MHI_CHANNELS_MAX];
+};
+
+struct ipa_mhi_clk_vote_req {
+	u8 mhi_vote;
+	u8 tput_value_valid;
+	u32 tput_value;
+	u8 clk_rate_valid;
+	u32 clk_rate;
+};
+
+struct ipa_mhi_clk_vote_rsp {
+	struct qmi_response_type_v01 rsp;
+};
+
 /* Message structure definitions defined in "ipa_qmi_msg.c" */
 extern const struct qmi_elem_info ipa_indication_register_req_ei[];
 extern const struct qmi_elem_info ipa_indication_register_rsp_ei[];
@@ -258,5 +362,10 @@ extern const struct qmi_elem_info ipa_mem_array_ei[];
 extern const struct qmi_elem_info ipa_mem_range_ei[];
 extern const struct qmi_elem_info ipa_init_modem_driver_req_ei[];
 extern const struct qmi_elem_info ipa_init_modem_driver_rsp_ei[];
+extern const struct qmi_elem_info ipa_mhi_ready_ind_ei[];
+extern const struct qmi_elem_info ipa_mhi_alloc_channel_req_ei[];
+extern const struct qmi_elem_info ipa_mhi_alloc_channel_rsp_ei[];
+extern const struct qmi_elem_info ipa_mhi_clk_vote_req_ei[];
+extern const struct qmi_elem_info ipa_mhi_clk_vote_rsp_ei[];
 
 #endif /* !_IPA_QMI_MSG_H_ */

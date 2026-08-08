@@ -42,6 +42,16 @@ void ipa_uc_deconfig(struct ipa *ipa);
 void ipa_uc_power(struct ipa *ipa);
 
 /**
+ * ipa_uc_mhi_remote_info() - map an MHI doorbell into an IPA uC mailbox
+ * @ipa:		IPA pointer
+ * @remote_addr:	MHI channel/event doorbell physical address
+ * @mailbox:		IPA uC mailbox number
+ *
+ * Return: 0 on success, negative errno on failure.
+ */
+int ipa_uc_mhi_remote_info(struct ipa *ipa, u32 remote_addr, u32 mailbox);
+
+/**
  * ipa_uc_panic_notifier()
  * @ipa:	IPA pointer
  *

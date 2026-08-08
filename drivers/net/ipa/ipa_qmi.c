@@ -5,10 +5,12 @@
  */
 
 #include <linux/qrtr.h>
+#include <linux/of.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
 #include "ipa.h"
+#include "ipa_mhi.h"
 #include "ipa_mem.h"
 #include "ipa_modem.h"
 #include "ipa_qmi_msg.h"
@@ -72,6 +74,14 @@
 
 #define IPA_MODEM_SERVICE_SVC_ID	0x31
 #define IPA_MODEM_SERVICE_INS_ID	2
+/*
+ * SDX55 Fusion publishes IPA on TWO modem PD instances: 1 (modem-PD-A) and
+ * 2 (modem-PD-B / MHI proxy).  Mainline only targeted instance 2; the
+ * modem-PD-A IPA task waits on its own INIT_COMPLETE and starves toward
+ * MISSION+15s.  Add a lookup for the alt instance so we can tell both PDs
+ * the AP IPA driver is up.
+ */
+#define IPA_MODEM_SERVICE_INS_ID_ALT	1
 #define IPA_MODEM_SVC_VERS		1
 
 #define QMI_INIT_DRIVER_TIMEOUT		60000	/* A minute in milliseconds */
@@ -142,6 +152,9 @@ static void ipa_qmi_ready(struct ipa_qmi *ipa_qmi)
 
 	/* We're ready.  Start up normal operation */
 	ipa = container_of(ipa_qmi, struct ipa, qmi);
+	ret = ipa_mhi_modem_ready(ipa);
+	if (ret)
+		dev_err(ipa->dev, "error %d starting IPA MHI proxy\n", ret);
 	ret = ipa_modem_start(ipa);
 	if (ret)
 		dev_err(ipa->dev, "error %d starting modem\n", ret);
@@ -151,8 +164,10 @@ static void ipa_qmi_ready(struct ipa_qmi *ipa_qmi)
 static void ipa_server_bye(struct qmi_handle *qmi, unsigned int node)
 {
 	struct ipa_qmi *ipa_qmi;
+	struct ipa *ipa;
 
 	ipa_qmi = container_of(qmi, struct ipa_qmi, server_handle);
+	ipa = container_of(ipa_qmi, struct ipa, qmi);
 
 	/* The modem client and server go away at the same time */
 	memset(&ipa_qmi->modem_sq, 0, sizeof(ipa_qmi->modem_sq));
@@ -162,6 +177,8 @@ static void ipa_server_bye(struct qmi_handle *qmi, unsigned int node)
 	ipa_qmi->modem_ready = false;
 	ipa_qmi->indication_requested = false;
 	ipa_qmi->indication_sent = false;
+
+	ipa_mhi_modem_shutdown(ipa);
 }
 
 static const struct qmi_ops ipa_server_ops = {
@@ -229,7 +246,53 @@ static void ipa_server_driver_init_complete(struct qmi_handle *qmi,
 	}
 }
 
-/* The server handles two request message types sent by the modem. */
+static void ipa_server_mhi_alloc_channel(struct qmi_handle *qmi,
+					 struct sockaddr_qrtr *sq,
+					 struct qmi_txn *txn,
+					 const void *decoded)
+{
+	struct ipa_mhi_alloc_channel_rsp rsp;
+	struct ipa_qmi *ipa_qmi;
+	struct ipa *ipa;
+	int ret;
+
+	ipa_qmi = container_of(qmi, struct ipa_qmi, server_handle);
+	ipa = container_of(ipa_qmi, struct ipa, qmi);
+
+	ipa_mhi_alloc_channel(ipa, decoded, &rsp);
+
+	ret = qmi_send_response(qmi, sq, txn, IPA_QMI_MHI_ALLOC_CHANNEL,
+				IPA_QMI_MHI_ALLOC_CHANNEL_RSP_SZ,
+				ipa_mhi_alloc_channel_rsp_ei, &rsp);
+	if (ret)
+		dev_err(ipa->dev,
+			"error %d sending MHI alloc channel response\n", ret);
+}
+
+static void ipa_server_mhi_clk_vote(struct qmi_handle *qmi,
+				    struct sockaddr_qrtr *sq,
+				    struct qmi_txn *txn,
+				    const void *decoded)
+{
+	struct ipa_mhi_clk_vote_rsp rsp;
+	struct ipa_qmi *ipa_qmi;
+	struct ipa *ipa;
+	int ret;
+
+	ipa_qmi = container_of(qmi, struct ipa_qmi, server_handle);
+	ipa = container_of(ipa_qmi, struct ipa, qmi);
+
+	ipa_mhi_clk_vote(ipa, decoded, &rsp);
+
+	ret = qmi_send_response(qmi, sq, txn, IPA_QMI_MHI_CLK_VOTE,
+				IPA_QMI_MHI_CLK_VOTE_RSP_SZ,
+				ipa_mhi_clk_vote_rsp_ei, &rsp);
+	if (ret)
+		dev_err(ipa->dev,
+			"error %d sending MHI clock vote response\n", ret);
+}
+
+/* The server handles request message types sent by the modem. */
 static const struct qmi_msg_handler ipa_server_msg_handlers[] = {
 	{
 		.type		= QMI_REQUEST,
@@ -244,6 +307,20 @@ static const struct qmi_msg_handler ipa_server_msg_handlers[] = {
 		.ei		= ipa_driver_init_complete_req_ei,
 		.decoded_size	= IPA_QMI_DRIVER_INIT_COMPLETE_REQ_SZ,
 		.fn		= ipa_server_driver_init_complete,
+	},
+	{
+		.type		= QMI_REQUEST,
+		.msg_id		= IPA_QMI_MHI_ALLOC_CHANNEL,
+		.ei		= ipa_mhi_alloc_channel_req_ei,
+		.decoded_size	= sizeof(struct ipa_mhi_alloc_channel_req),
+		.fn		= ipa_server_mhi_alloc_channel,
+	},
+	{
+		.type		= QMI_REQUEST,
+		.msg_id		= IPA_QMI_MHI_CLK_VOTE,
+		.ei		= ipa_mhi_clk_vote_req_ei,
+		.decoded_size	= sizeof(struct ipa_mhi_clk_vote_req),
+		.fn		= ipa_server_mhi_clk_vote,
 	},
 	{ },
 };
@@ -448,13 +525,50 @@ static int
 ipa_client_new_server(struct qmi_handle *qmi, struct qmi_service *svc)
 {
 	struct ipa_qmi *ipa_qmi;
+	struct ipa *ipa;
 
 	ipa_qmi = container_of(qmi, struct ipa_qmi, client_handle);
+	ipa = container_of(ipa_qmi, struct ipa, qmi);
+
+	if (svc->instance == IPA_MODEM_SERVICE_INS_ID_ALT) {
+		ipa_qmi->modem_sq_alt.sq_family = AF_QIPCRTR;
+		ipa_qmi->modem_sq_alt.sq_node = svc->node;
+		ipa_qmi->modem_sq_alt.sq_port = svc->port;
+		ipa_qmi->modem_sq_alt_valid = true;
+		ipa_mhi_modem_server_alt(ipa, &ipa_qmi->modem_sq_alt);
+		dev_info(ipa->dev,
+			 "IPA modem alt service at %u:%u (instance %u)\n",
+			 svc->node, svc->port, svc->instance);
+		return 0;
+	}
 
 	ipa_qmi->modem_sq.sq_family = AF_QIPCRTR;
 	ipa_qmi->modem_sq.sq_node = svc->node;
 	ipa_qmi->modem_sq.sq_port = svc->port;
 
+	ipa_mhi_modem_server(ipa, &ipa_qmi->modem_sq);
+
+	/* On SDX55-fusion (qcom,sm8250-ipa) the modem ignores the legacy
+	 * INIT_DRIVER request and instead expects the AP-side IPA MHI proxy
+	 * MHI_READY indication carrying remote channel doorbell info.  Kick
+	 * the MHI proxy registration here; ipa_mhi_modem_ready returns
+	 * non-fusion as a no-op.
+	 */
+	if (of_device_is_compatible(ipa->dev->of_node, "qcom,sm8250-ipa")) {
+		int ret;
+
+		dev_info(ipa->dev,
+			 "IPA modem service at %u:%u; arming MHI proxy\n",
+			 svc->node, svc->port);
+		ret = ipa_mhi_modem_ready(ipa);
+		if (ret)
+			dev_err(ipa->dev,
+				"error %d arming IPA MHI proxy\n", ret);
+		return 0;
+	}
+
+	dev_info(ipa->dev, "IPA modem service at %u:%u; sending INIT_DRIVER\n",
+		 svc->node, svc->port);
 	schedule_work(&ipa_qmi->init_driver_work);
 
 	return 0;
@@ -501,13 +615,30 @@ int ipa_qmi_setup(struct ipa *ipa)
 	/* We need this ready before the service lookup is added */
 	INIT_WORK(&ipa_qmi->init_driver_work, ipa_client_init_driver_work);
 
-	ret = qmi_add_lookup(&ipa_qmi->client_handle, IPA_MODEM_SERVICE_SVC_ID,
-			     IPA_MODEM_SVC_VERS, IPA_MODEM_SERVICE_INS_ID);
+	ret = ipa_mhi_setup(ipa);
 	if (ret)
 		goto err_client_handle_release;
 
+	ret = qmi_add_lookup(&ipa_qmi->client_handle, IPA_MODEM_SERVICE_SVC_ID,
+			     IPA_MODEM_SVC_VERS, IPA_MODEM_SERVICE_INS_ID);
+	if (ret)
+		goto err_mhi_teardown;
+
+	/*
+	 * Second lookup for the alt PD instance.  Best-effort: if the modem
+	 * never publishes it, ipa_qmi->modem_sq_alt_valid stays false and we
+	 * just don't deliver the alt INIT_COMPLETE.
+	 */
+	ret = qmi_add_lookup(&ipa_qmi->client_handle, IPA_MODEM_SERVICE_SVC_ID,
+			     IPA_MODEM_SVC_VERS,
+			     IPA_MODEM_SERVICE_INS_ID_ALT);
+	if (ret)
+		goto err_mhi_teardown;
+
 	return 0;
 
+err_mhi_teardown:
+	ipa_mhi_teardown(ipa);
 err_client_handle_release:
 	/* Releasing the handle also removes registered lookups */
 	qmi_handle_release(&ipa_qmi->client_handle);
@@ -524,6 +655,8 @@ err_server_handle_release:
 void ipa_qmi_teardown(struct ipa *ipa)
 {
 	cancel_work_sync(&ipa->qmi.init_driver_work);
+
+	ipa_mhi_teardown(ipa);
 
 	qmi_handle_release(&ipa->qmi.client_handle);
 	memset(&ipa->qmi.client_handle, 0, sizeof(ipa->qmi.client_handle));

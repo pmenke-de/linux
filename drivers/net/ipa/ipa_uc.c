@@ -5,12 +5,16 @@
  */
 
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/errno.h>
+#include <linux/gfp.h>
 #include <linux/io.h>
 #include <linux/pm_runtime.h>
 #include <linux/types.h>
 
 #include "ipa.h"
 #include "ipa_interrupt.h"
+#include "ipa_mhi.h"
 #include "ipa_power.h"
 #include "ipa_reg.h"
 #include "ipa_uc.h"
@@ -100,6 +104,7 @@ enum ipa_uc_command {
 	IPA_UC_COMMAND_RESET_PIPE	= 0x8,
 	IPA_UC_COMMAND_REG_WRITE	= 0x9,
 	IPA_UC_COMMAND_GSI_CH_EMPTY	= 0xa,
+	IPA_UC_COMMAND_REMOTE_IPA_INFO	= 0xb,
 };
 
 /** enum ipa_uc_response - microcontroller response codes */
@@ -115,6 +120,11 @@ enum ipa_uc_event {
 	IPA_UC_EVENT_NO_OP		= 0x0,
 	IPA_UC_EVENT_ERROR		= 0x1,
 	IPA_UC_EVENT_LOG_INFO		= 0x2,
+};
+
+struct ipa_uc_mhi_db_addr_info {
+	__le32 remote_addr;
+	__le32 mailbox;
 };
 
 static struct ipa_uc_mem_area *ipa_uc_shared(struct ipa *ipa)
@@ -155,14 +165,25 @@ static void ipa_uc_response_hdlr(struct ipa *ipa)
 	 */
 	switch (shared->response) {
 	case IPA_UC_RESPONSE_INIT_COMPLETED:
-		if (ipa->uc_powered) {
+		if (ipa->uc_loaded) {
+			dev_warn(dev, "unexpected init_completed response\n");
+		} else {
 			ipa->uc_loaded = true;
+			dev_info(dev, "IPA uC loaded\n");
+			/* uc_loaded is a precondition for IPA MHI proxy
+			 * MHI_READY indication.  Retry now in case the
+			 * modem advertised its IPA service before uC was up.
+			 */
+			ipa_mhi_send_ready(ipa);
+		}
+
+		if (ipa->uc_powered) {
 			ipa_power_retention(ipa, true);
 			(void)pm_runtime_put_autosuspend(dev);
 			ipa->uc_powered = false;
-		} else {
-			dev_warn(dev, "unexpected init_completed response\n");
 		}
+		break;
+	case IPA_UC_RESPONSE_CMD_COMPLETED:
 		break;
 	default:
 		dev_warn(dev, "unsupported microcontroller response %u\n",
@@ -245,6 +266,58 @@ static void send_uc_command(struct ipa *ipa, u32 command, u32 command_param)
 	val = reg_bit(reg, UC_INTR);
 
 	iowrite32(val, ipa->reg_virt + reg_offset(reg));
+}
+
+static int ipa_uc_command_wait(struct ipa *ipa, u32 command, dma_addr_t param)
+{
+	struct ipa_uc_mem_area *shared = ipa_uc_shared(ipa);
+	const struct reg *reg;
+	u32 val;
+	u32 i;
+
+	shared->command = command;
+	shared->command_param = cpu_to_le32(lower_32_bits(param));
+	shared->command_param_hi = cpu_to_le32(upper_32_bits(param));
+	shared->response = 0;
+	shared->response_param = 0;
+
+	reg = ipa_reg(ipa, IPA_IRQ_UC);
+	val = reg_bit(reg, UC_INTR);
+
+	wmb();
+	iowrite32(val, ipa->reg_virt + reg_offset(reg));
+
+	for (i = 0; i < 1000; i++) {
+		if (shared->response == IPA_UC_RESPONSE_CMD_COMPLETED)
+			return 0;
+		if (shared->response != IPA_UC_RESPONSE_NO_OP)
+			return -EIO;
+		usleep_range(1000, 2000);
+	}
+
+	return -ETIMEDOUT;
+}
+
+int ipa_uc_mhi_remote_info(struct ipa *ipa, u32 remote_addr, u32 mailbox)
+{
+	struct ipa_uc_mhi_db_addr_info *info;
+	dma_addr_t dma;
+	int ret;
+
+	if (!ipa->uc_loaded)
+		return -ENODEV;
+
+	info = dma_alloc_coherent(ipa->dev, sizeof(*info), &dma, GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	info->remote_addr = cpu_to_le32(remote_addr);
+	info->mailbox = cpu_to_le32(mailbox);
+
+	ret = ipa_uc_command_wait(ipa, IPA_UC_COMMAND_REMOTE_IPA_INFO, dma);
+	dma_free_coherent(ipa->dev, sizeof(*info), info, dma);
+
+	return ret;
 }
 
 /* Tell the microcontroller the AP is shutting down */
