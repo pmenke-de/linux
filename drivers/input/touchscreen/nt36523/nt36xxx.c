@@ -2015,6 +2015,7 @@ static struct drm_panel_follower_funcs nt36xxx_panel_follower_funcs = {
 static const struct spi_device_id nvt_ts_id[] = {
 	{ "NVT-ts-spi", 0 },
 	{ "NVT-ts-spi-nt36532", 0 },
+	{ "NVT-ts-spi-nt36675", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(spi, nvt_ts_id);
