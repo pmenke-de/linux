@@ -100,6 +100,7 @@ struct vss_icommon_cmd_set_param_media_format {
 #define VSS_IVOCPROC_CMD_TOPOLOGY_COMMIT		0x00013198
 
 #define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2	0x000112BF
+#define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V3	0x00013169
 
 struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
 	struct apr_hdr hdr;
@@ -163,12 +164,21 @@ struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
 } __packed;
 
 struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
-					     u16 tx_port, u16 rx_port)
+					     u16 tx_port, u16 rx_port,
+					     bool create_v3)
 {
-	struct vss_ivocproc_cmd_create_full_control_session_v2_cmd cmd;
+	/*
+	 * Zeroed rather than field-by-field: the trailing name is optional and
+	 * the vendor leaves it empty, but it still goes out on the wire, so it
+	 * must not be whatever was on the stack.
+	 */
+	struct vss_ivocproc_cmd_create_full_control_session_v2_cmd cmd = {0};
 
 	cmd.hdr.pkt_size = sizeof(cmd);
-	cmd.hdr.opcode = VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2;
+	/* Same payload either way -- see q6voice_cvp_create_v3(). */
+	cmd.hdr.opcode = create_v3 ?
+		VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V3 :
+		VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2;
 
 	/* TODO: Implement calibration */
 	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;

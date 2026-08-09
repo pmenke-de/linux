@@ -36,6 +36,22 @@ struct q6voice {
 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
 };
 
+/*
+ * Which of the two create commands the vocproc expects. They carry the same
+ * payload and differ only in opcode, but the choice is not cosmetic: a CVD
+ * from 2.2 on refuses VSS_IVOCPROC_CMD_TOPOLOGY_COMMIT for a session that was
+ * created with the older V2 command.
+ */
+static bool q6voice_cvp_create_v3(const char *cvd_version)
+{
+	unsigned int major, minor;
+
+	if (sscanf(cvd_version, "%u.%u", &major, &minor) != 2)
+		return false;
+
+	return major > 2 || (major == 2 && minor >= 2);
+}
+
 static int q6voice_path_start(struct q6voice_path *p)
 {
 	struct device *dev = p->v->dev;
@@ -71,27 +87,27 @@ static int q6voice_path_start(struct q6voice_path *p)
 		return ret;
 	}
 
+	/*
+	 * Which CVD the ADSP runs decides how the vocproc below is created, so
+	 * ask before creating it. The vendor gates the topology commit on
+	 * >= 2.2 and the per-path media format commands on >= 2.3 as well.
+	 */
+	if (!p->v->cvd_version[0] &&
+	    !q6mvm_get_cvd_version(p->v->cvd_version, sizeof(p->v->cvd_version)))
+		dev_info(dev, "ADSP CVD version: '%s'\n", p->v->cvd_version);
+
 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
 	if (!cvp) {
 		cvp = q6cvp_session_create(p->type,
 					   q6afe_get_port_id(p->tx_port),
-					   q6afe_get_port_id(p->rx_port));
+					   q6afe_get_port_id(p->rx_port),
+					   q6voice_cvp_create_v3(p->v->cvd_version));
 		if (IS_ERR(cvp)) {
 			ret = PTR_ERR(cvp);
 			goto stream_err;
 		}
 		p->runtime->sessions[Q6VOICE_SERVICE_CVP] = cvp;
 	}
-
-	/*
-	 * Report which CVD the ADSP runs. The vendor gates topology commit on
-	 * >= 2.2 and the per-path media format commands on >= 2.3, so this is
-	 * what distinguishes "command not supported" from "prerequisites not
-	 * sent yet" when one of them is refused.
-	 */
-	if (!p->v->cvd_version[0] &&
-	    !q6mvm_get_cvd_version(p->v->cvd_version, sizeof(p->v->cvd_version)))
-		dev_info(dev, "ADSP CVD version: '%s'\n", p->v->cvd_version);
 
 	/*
 	 * Describe both directions before committing: the ADSP refuses the
