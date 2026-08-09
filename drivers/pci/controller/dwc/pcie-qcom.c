@@ -1437,9 +1437,14 @@ int qcom_pcie_l23_ready(struct pci_dev *pdev)
 	u32 val;
 	int ret;
 
-	writel(ELBI_SYS_CTRL_PME_TURNOFF_MSG, pcie->elbi + ELBI_SYS_CTRL);
+	if (!pci->elbi_base) {
+		dev_err(pci->dev, "ELBI is not present\n");
+		return -ENODEV;
+	}
+
+	writel(ELBI_SYS_CTRL_PME_TURNOFF_MSG, pci->elbi_base + ELBI_SYS_CTRL);
 	/* flush posted write */
-	readl(pcie->elbi + ELBI_SYS_CTRL);
+	readl(pci->elbi_base + ELBI_SYS_CTRL);
 
 	ret = readl_poll_timeout(pcie->parf + PARF_PM_STTS, val,
 				 val & PM_STTS_LINKST_IN_L23,

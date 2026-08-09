@@ -293,7 +293,7 @@ int q6voice_common_send_svc_rsp(enum q6voice_service_type type,
 }
 EXPORT_SYMBOL_GPL(q6voice_common_send_svc_rsp);
 
-int q6voice_common_callback(struct apr_device *adev, struct apr_resp_pkt *data)
+int q6voice_common_callback(struct apr_device *adev, const struct apr_resp_pkt *data)
 {
 	struct device *dev = &adev->dev;
 	struct q6voice_service *v = dev_get_drvdata(dev);

@@ -76,7 +76,7 @@ static int pdr_locator_new_server(struct qmi_handle *qmi,
 	struct pdr_handle *pdr = container_of(qmi, struct pdr_handle,
 					      locator_hdl);
 
-	if (svc->service != SERVREG_LOCATOR_SERVICE ||
+	if (svc->service != QMI_SERVICE_ID_SERVREG_LOC ||
 	    svc->version != 1 || svc->instance != 1) {
 		pr_info("PDR: ignoring non-locator server service=%u version=%u instance=%u node=%u port=%u\n",
 			svc->service, svc->version, svc->instance,
@@ -109,7 +109,7 @@ static void pdr_locator_del_server(struct qmi_handle *qmi,
 	struct pdr_handle *pdr = container_of(qmi, struct pdr_handle,
 					      locator_hdl);
 
-	if (svc->service != SERVREG_LOCATOR_SERVICE ||
+	if (svc->service != QMI_SERVICE_ID_SERVREG_LOC ||
 	    svc->version != 1 || svc->instance != 1) {
 		pr_info("PDR: ignoring non-locator del_server service=%u version=%u instance=%u node=%u port=%u\n",
 			svc->service, svc->version, svc->instance,
