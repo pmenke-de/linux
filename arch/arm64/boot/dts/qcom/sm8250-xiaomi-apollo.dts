@@ -1209,6 +1209,16 @@
 		novatek,swrst-n8-addr = <0x03F0FE>;
 		novatek,spi-rd-fast-addr = <0x03F310>;
 
+		/*
+		 * The 6.17 driver read the touch resolution out of the
+		 * firmware; 7.1 takes it from DT instead and otherwise falls
+		 * back to 1600x2560, which is the elish/enuma tablet panel.
+		 * This panel is 1080x2400 and the controller reports in panel
+		 * pixels, so state it explicitly.
+		 */
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2400>;
+
 		firmware-name = "novatek/novatek_nt36675_j3s_fw01.bin";
 		mp-firmware-name = "novatek/novatek_nt36675_j3s_mp01.bin";
 	};
