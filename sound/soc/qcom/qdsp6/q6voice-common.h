@@ -37,6 +37,27 @@ struct q6voice_session {
  */
 #define Q6VOICE_SVC_PORT	0x0103
 
+/*
+ * Name of the session we create. The sessions on this side are passive: the
+ * modem owns the call and creates the matching active session, and the ADSP
+ * pairs the two up by this string. Nothing validates it, so getting it wrong
+ * is silent -- every command succeeds against a session the modem never joins,
+ * and no audio ever flows.
+ *
+ * Targets from about MSM8998 onwards, this one included, run MultiMode voice,
+ * where the first subscription is "VoiceMMode1" (VSID 0x11C05000). The older
+ * "default modem voice" only matches pre-MultiMode modems.
+ */
+static inline const char *q6voice_session_name(enum q6voice_path_type path)
+{
+	switch (path) {
+	case Q6VOICE_PATH_VOICE:
+		return "VoiceMMode1";
+	default:
+		return NULL;
+	}
+}
+
 int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type);
 void q6voice_common_remove(struct apr_device *adev);
 

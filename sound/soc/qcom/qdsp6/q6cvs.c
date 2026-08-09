@@ -18,16 +18,6 @@ struct vss_istream_cmd_create_control_session_cmd {
 	char name[20];
 } __packed;
 
-static inline const char *q6cvs_session_name(enum q6voice_path_type path)
-{
-	switch (path) {
-	case Q6VOICE_PATH_VOICE:
-		return "default modem voice";
-	default:
-		return NULL;
-	}
-}
-
 /*
  * The stream session is what actually carries voice packets. For a modem-driven
  * (circuit switched) call it is passive: the modem owns the vocoder and drives
@@ -43,7 +33,7 @@ struct q6voice_session *q6cvs_session_create(enum q6voice_path_type path)
 	cmd.hdr.pkt_size = sizeof(cmd);
 	cmd.hdr.opcode = VSS_ISTREAM_CMD_CREATE_PASSIVE_CONTROL_SESSION;
 
-	session_name = q6cvs_session_name(path);
+	session_name = q6voice_session_name(path);
 	if (session_name)
 		strscpy(cmd.name, session_name, sizeof(cmd.name));
 

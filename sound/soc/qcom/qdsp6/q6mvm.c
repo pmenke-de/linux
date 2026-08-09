@@ -76,16 +76,6 @@ struct vss_imvm_cmd_attach_vocproc_cmd {
 #define VSS_IMVM_CMD_START_VOICE			0x00011190
 #define VSS_IMVM_CMD_STOP_VOICE				0x00011192
 
-static inline const char *q6mvm_session_name(enum q6voice_path_type path)
-{
-	switch (path) {
-	case Q6VOICE_PATH_VOICE:
-		return "default modem voice";
-	default:
-		return NULL;
-	}
-}
-
 static int q6mvm_set_dual_control(struct q6voice_session *mvm)
 {
 	struct vss_imvm_cmd_set_policy_dual_control_cmd cmd;
@@ -100,7 +90,7 @@ static int q6mvm_set_dual_control(struct q6voice_session *mvm)
 
 struct q6voice_session *q6mvm_session_create(enum q6voice_path_type path)
 {
-	struct vss_imvm_cmd_create_control_session_cmd cmd;
+	struct vss_imvm_cmd_create_control_session_cmd cmd = {0};
 	struct q6voice_session *mvm;
 	const char *session_name;
 	int ret;
@@ -108,7 +98,7 @@ struct q6voice_session *q6mvm_session_create(enum q6voice_path_type path)
 	cmd.hdr.pkt_size = sizeof(cmd);
 	cmd.hdr.opcode = VSS_IMVM_CMD_CREATE_PASSIVE_CONTROL_SESSION;
 
-	session_name = q6mvm_session_name(path);
+	session_name = q6voice_session_name(path);
 	if (session_name)
 		strscpy(cmd.name, session_name, sizeof(cmd.name));
 
