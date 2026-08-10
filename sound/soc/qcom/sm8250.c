@@ -63,8 +63,9 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	struct snd_soc_dai *codec_dai;
 	int ret = 0;
-	int channels, slots, slot_width;
+	int channels, slots, slot_width, i;
 
 	channels = params_channels(params);
 	slots = 8;
@@ -84,6 +85,26 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 			dev_err(rtd->dev, "%s: failed to set channel map, err:%d\n",
 				__func__, ret);
 			goto end;
+		}
+
+		/*
+		 * Tell each codec which slot of the frame is its own. Setting
+		 * the map on the CPU side only says which slots are populated,
+		 * so without this every codec on the link reads slot 0 and a
+		 * stereo pair of amplifiers plays the same channel twice.
+		 * Codecs that do not implement the op keep their default.
+		 */
+		for_each_rtd_codec_dais(rtd, i, codec_dai) {
+			unsigned int rx_slot = i;
+
+			ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
+							  1, &rx_slot);
+			if (ret < 0 && ret != -ENOTSUPP) {
+				dev_err(rtd->dev,
+					"%s: failed to map %s to slot %u, err:%d\n",
+					__func__, codec_dai->name, rx_slot, ret);
+				goto end;
+			}
 		}
 
 		ret = 0;
