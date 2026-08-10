@@ -35,6 +35,7 @@ struct q6voice {
 	/* cached so the version is queried once, not per call */
 	char cvd_version[32];
 	/* lent to the ADSP once and referred to by handle thereafter */
+	struct q6voice_cal *stream_cal;	/* the stream's own */
 	struct q6voice_cal *dev_cfg;	/* what the endpoints are */
 	struct q6voice_cal *cal;	/* the vocproc, other than by step */
 	struct q6voice_cal *vol_cal;	/* the vocproc, per volume step */
@@ -54,6 +55,7 @@ struct q6voice {
  * step, then what does. A volume table is an overlay on a vocproc that has
  * already been told the first two, which is why the order is not incidental.
  */
+#define Q6VOICE_STREAM_CAL_FIRMWARE	"qcom/q6voice-stream-cal.bin"
 #define Q6VOICE_DEV_CFG_FIRMWARE	"qcom/q6voice-devcfg.bin"
 #define Q6VOICE_CAL_FIRMWARE		"qcom/q6voice-cal.bin"
 #define Q6VOICE_VOL_CAL_FIRMWARE	"qcom/q6voice-vol-cal.bin"
@@ -300,11 +302,15 @@ static int q6voice_path_start(struct q6voice_path *p)
 	 * proceeds, and only the volume command notices.
 	 */
 	if (cal_level >= Q6VOICE_CAL_LEND && (!p->v->cal_tried || cal_reload)) {
+		q6voice_cal_free(p->v->stream_cal);
 		q6voice_cal_free(p->v->dev_cfg);
 		q6voice_cal_free(p->v->cal);
 		q6voice_cal_free(p->v->vol_cal);
 
 		p->v->cal_tried = true;
+		p->v->stream_cal = q6voice_cal_load(dev,
+						    Q6VOICE_STREAM_CAL_FIRMWARE,
+						    mvm);
 		p->v->dev_cfg = q6voice_cal_load(dev, Q6VOICE_DEV_CFG_FIRMWARE,
 						 mvm);
 		p->v->cal = q6voice_cal_load(dev, Q6VOICE_CAL_FIRMWARE, mvm);
@@ -314,6 +320,12 @@ static int q6voice_path_start(struct q6voice_path *p)
 
 	if (cal_level >= Q6VOICE_CAL_REGISTER) {
 		bool instance = q6voice_cvp_create_v3(p->v->cvd_version);
+
+		ret = q6voice_cal_register_stream(p->v->stream_cal, cvs,
+						  instance);
+		if (ret)
+			dev_warn(dev, "failed to register stream calibration: %d\n",
+				 ret);
 
 		if (!p->v->dev_cfg)
 			dev_warn(dev, "no device configuration to register\n");
@@ -533,6 +545,7 @@ static void q6voice_free(void *data)
 		mutex_destroy(&p->lock);
 	}
 
+	q6voice_cal_free(v->stream_cal);
 	q6voice_cal_free(v->dev_cfg);
 	q6voice_cal_free(v->cal);
 	q6voice_cal_free(v->vol_cal);

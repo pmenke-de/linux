@@ -13,6 +13,26 @@
 
 #define VSS_IVOLUME_CMD_MUTE_V2				0x0001138B
 
+/*
+ * The stream has calibration of its own, separate from the vocproc's, and the
+ * vendor registers it first of the four. Same shape as the vocproc's tables:
+ * a handle, where in it the data starts, and how the rows are indexed.
+ */
+#define VSS_ISTREAM_CMD_REGISTER_STATIC_CALIBRATION_DATA	0x0001307D
+#define VSS_ISTREAM_CMD_REGISTER_CALIBRATION_DATA_V2	0x00011369
+
+#define VSS_MAX_COL_INFO_SIZE				324
+
+struct vss_istream_cmd_register_calibration_data {
+	struct apr_hdr hdr;
+
+	u32 cal_mem_handle;
+	u32 cal_mem_address_lsw;
+	u32 cal_mem_address_msw;
+	u32 cal_mem_size;
+	u8 column_info[VSS_MAX_COL_INFO_SIZE];
+} __packed;
+
 #define VSS_IVOLUME_MUTE_OFF				0
 #define VSS_IVOLUME_MUTE_ON				1
 
@@ -58,6 +78,31 @@ EXPORT_SYMBOL_GPL(q6cvs_session_create);
  * Mute state of the stream itself, as opposed to the device. The vendor sends
  * this for the uplink on every call rather than trusting the ADSP's default.
  */
+int q6cvs_register_cal(struct q6voice_session *cvs, bool instance,
+		       u32 mem_handle, phys_addr_t phys, u32 size,
+		       const void *col_info, u32 col_size)
+{
+	struct vss_istream_cmd_register_calibration_data cmd = {0};
+
+	if (col_size > sizeof(cmd.column_info))
+		return -EINVAL;
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = instance ?
+		VSS_ISTREAM_CMD_REGISTER_STATIC_CALIBRATION_DATA :
+		VSS_ISTREAM_CMD_REGISTER_CALIBRATION_DATA_V2;
+
+	cmd.cal_mem_handle = mem_handle;
+	cmd.cal_mem_address_lsw = lower_32_bits(phys);
+	cmd.cal_mem_address_msw = upper_32_bits(phys);
+	cmd.cal_mem_size = size;
+	if (col_size)
+		memcpy(cmd.column_info, col_info, col_size);
+
+	return q6voice_common_send(cvs, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvs_register_cal);
+
 int q6cvs_set_mute(struct q6voice_session *cvs, u16 direction, bool mute,
 		   u16 ramp_ms)
 {

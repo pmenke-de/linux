@@ -40,6 +40,7 @@
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include "q6cvs.h"
 #include "q6mvm.h"
 #include "q6voice-common.h"
 #include "q6voice-cal.h"
@@ -303,6 +304,18 @@ int q6voice_cal_register_cal(struct q6voice_cal *cal,
 				  cal->col_info, cal->col_size);
 }
 EXPORT_SYMBOL_GPL(q6voice_cal_register_cal);
+
+int q6voice_cal_register_stream(struct q6voice_cal *cal,
+				struct q6voice_session *cvs, bool instance)
+{
+	if (!cal)
+		return 0;
+
+	return q6cvs_register_cal(cvs, instance, cal->mem_handle,
+				  cal->dsp_data_addr, cal->data_size,
+				  cal->col_info, cal->col_size);
+}
+EXPORT_SYMBOL_GPL(q6voice_cal_register_stream);
 
 int q6voice_cal_register_dev_cfg(struct q6voice_cal *cal,
 				 struct q6voice_session *cvp)

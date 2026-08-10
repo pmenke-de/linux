@@ -123,14 +123,24 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
 
 	switch (cpu_dai->id) {
+	case TERTIARY_TDM_RX_0:
+		/*
+		 * The amplifiers on this board share a TDM frame that runs at
+		 * 96 kHz in 24 bits, which is also where call downlink lands.
+		 * Pinning it to 48 kHz and 16 bits like the rest leaves the
+		 * amplifiers reading the wrong part of each slot.
+		 */
+		rate->min = rate->max = 96000;
+		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
+		break;
 	case TX_CODEC_DMA_TX_0:
 	case TX_CODEC_DMA_TX_1:
 	case TX_CODEC_DMA_TX_2:
 	case TX_CODEC_DMA_TX_3:
 		/*
 		 * Qualcomm codec TX backends may be driven in mono or stereo.
-		 * For Apollo this matches vendor's TX3 configuration better than
-		 * forcing stereo unconditionally.
+		 * The capture device used for calls on this board is a pair of
+		 * microphones, so leave room for both.
 		 */
 		channels->min = 1;
 		break;

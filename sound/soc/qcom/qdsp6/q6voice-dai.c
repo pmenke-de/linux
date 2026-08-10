@@ -158,6 +158,37 @@ static const struct snd_kcontrol_new quinary_mi2s_rx_mixer_controls[] = {
 		       q6voice_get_mixer, q6voice_put_mixer)
 };
 
+/*
+ * Boards that drive their speaker amplifiers over TDM rather than MI2S need the
+ * downlink there instead; Apollo (SM8250 + CS35L41) is one, and Android routes
+ * its calls to TERT_TDM_RX_0. Only the first slot group of each interface is
+ * offered, which is the one a codec on a shared frame is given.
+ */
+static const struct snd_kcontrol_new primary_tdm_rx_0_mixer_controls[] = {
+	SOC_SINGLE_EXT("CS-Voice", PRIMARY_TDM_RX_0, 0, 1, 0,
+		       q6voice_get_mixer, q6voice_put_mixer)
+};
+
+static const struct snd_kcontrol_new secondary_tdm_rx_0_mixer_controls[] = {
+	SOC_SINGLE_EXT("CS-Voice", SECONDARY_TDM_RX_0, 0, 1, 0,
+		       q6voice_get_mixer, q6voice_put_mixer)
+};
+
+static const struct snd_kcontrol_new tertiary_tdm_rx_0_mixer_controls[] = {
+	SOC_SINGLE_EXT("CS-Voice", TERTIARY_TDM_RX_0, 0, 1, 0,
+		       q6voice_get_mixer, q6voice_put_mixer)
+};
+
+static const struct snd_kcontrol_new quaternary_tdm_rx_0_mixer_controls[] = {
+	SOC_SINGLE_EXT("CS-Voice", QUATERNARY_TDM_RX_0, 0, 1, 0,
+		       q6voice_get_mixer, q6voice_put_mixer)
+};
+
+static const struct snd_kcontrol_new quinary_tdm_rx_0_mixer_controls[] = {
+	SOC_SINGLE_EXT("CS-Voice", QUINARY_TDM_RX_0, 0, 1, 0,
+		       q6voice_get_mixer, q6voice_put_mixer)
+};
+
 static const struct snd_soc_dapm_widget q6voice_dapm_widgets[] = {
 	SND_SOC_DAPM_AIF_IN("CS-VOICE_DL1", "CS-VOICE Playback", 0, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_AIF_OUT("CS-VOICE_UL1", "CS-VOICE Capture", 0, SND_SOC_NOPM, 0, 0),
@@ -179,6 +210,21 @@ static const struct snd_soc_dapm_widget q6voice_dapm_widgets[] = {
 	SND_SOC_DAPM_MIXER("QUIN_MI2S_RX Voice Mixer", SND_SOC_NOPM, 0, 0,
 			   quinary_mi2s_rx_mixer_controls,
 			   ARRAY_SIZE(quinary_mi2s_rx_mixer_controls)),
+	SND_SOC_DAPM_MIXER("PRIMARY_TDM_RX_0 Voice Mixer", SND_SOC_NOPM, 0, 0,
+			   primary_tdm_rx_0_mixer_controls,
+			   ARRAY_SIZE(primary_tdm_rx_0_mixer_controls)),
+	SND_SOC_DAPM_MIXER("SEC_TDM_RX_0 Voice Mixer", SND_SOC_NOPM, 0, 0,
+			   secondary_tdm_rx_0_mixer_controls,
+			   ARRAY_SIZE(secondary_tdm_rx_0_mixer_controls)),
+	SND_SOC_DAPM_MIXER("TERT_TDM_RX_0 Voice Mixer", SND_SOC_NOPM, 0, 0,
+			   tertiary_tdm_rx_0_mixer_controls,
+			   ARRAY_SIZE(tertiary_tdm_rx_0_mixer_controls)),
+	SND_SOC_DAPM_MIXER("QUAT_TDM_RX_0 Voice Mixer", SND_SOC_NOPM, 0, 0,
+			   quaternary_tdm_rx_0_mixer_controls,
+			   ARRAY_SIZE(quaternary_tdm_rx_0_mixer_controls)),
+	SND_SOC_DAPM_MIXER("QUIN_TDM_RX_0 Voice Mixer", SND_SOC_NOPM, 0, 0,
+			   quinary_tdm_rx_0_mixer_controls,
+			   ARRAY_SIZE(quinary_tdm_rx_0_mixer_controls)),
 };
 
 static const struct snd_soc_dapm_route q6voice_dapm_routes[] = {
@@ -201,6 +247,17 @@ static const struct snd_soc_dapm_route q6voice_dapm_routes[] = {
 	{ "TERT_MI2S_RX",		NULL,		"TERT_MI2S_RX Voice Mixer" },
 	{ "QUAT_MI2S_RX",		NULL,		"QUAT_MI2S_RX Voice Mixer" },
 	{ "QUIN_MI2S_RX",		NULL,		"QUIN_MI2S_RX Voice Mixer" },
+
+	{ "PRIMARY_TDM_RX_0 Voice Mixer", "CS-Voice",	"CS-VOICE_DL1" },
+	{ "SEC_TDM_RX_0 Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+	{ "TERT_TDM_RX_0 Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+	{ "QUAT_TDM_RX_0 Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+	{ "QUIN_TDM_RX_0 Voice Mixer",	"CS-Voice",	"CS-VOICE_DL1" },
+	{ "PRIMARY_TDM_RX_0",		NULL,	"PRIMARY_TDM_RX_0 Voice Mixer" },
+	{ "SEC_TDM_RX_0",		NULL,	"SEC_TDM_RX_0 Voice Mixer" },
+	{ "TERT_TDM_RX_0",		NULL,	"TERT_TDM_RX_0 Voice Mixer" },
+	{ "QUAT_TDM_RX_0",		NULL,	"QUAT_TDM_RX_0 Voice Mixer" },
+	{ "QUIN_TDM_RX_0",		NULL,	"QUIN_TDM_RX_0 Voice Mixer" },
 };
 
 static unsigned int q6voice_reg_read(struct snd_soc_component *component,

@@ -24,6 +24,8 @@ int q6voice_cal_register_vol(struct q6voice_cal *cal,
 			     struct q6voice_session *cvp, bool instance);
 int q6voice_cal_register_cal(struct q6voice_cal *cal,
 			     struct q6voice_session *cvp, bool instance);
+int q6voice_cal_register_stream(struct q6voice_cal *cal,
+				struct q6voice_session *cvs, bool instance);
 int q6voice_cal_register_dev_cfg(struct q6voice_cal *cal,
 				 struct q6voice_session *cvp);
 

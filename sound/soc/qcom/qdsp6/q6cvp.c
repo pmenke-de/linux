@@ -376,7 +376,7 @@ EXPORT_SYMBOL_GPL(q6cvp_session_create);
  * varies only the channel count, so these are the defaults; they are writable
  * for boards that route voice somewhere else.
  */
-static unsigned int rx_rate = 48000;
+static unsigned int rx_rate = 96000;
 module_param(rx_rate, uint, 0644);
 MODULE_PARM_DESC(rx_rate, "Sample rate of the vocproc's render port.");
 
@@ -388,9 +388,17 @@ static unsigned int rx_channels = 2;
 module_param(rx_channels, uint, 0644);
 MODULE_PARM_DESC(rx_channels, "Channel count of the vocproc's render port.");
 
-static unsigned int tx_channels = 1;
+static unsigned int tx_channels = 2;
 module_param(tx_channels, uint, 0644);
 MODULE_PARM_DESC(tx_channels, "Channel count of the vocproc's capture port.");
+
+static unsigned int rx_bits = 24;
+module_param(rx_bits, uint, 0644);
+MODULE_PARM_DESC(rx_bits, "Sample width of the vocproc's render port.");
+
+static unsigned int tx_bits = 16;
+module_param(tx_bits, uint, 0644);
+MODULE_PARM_DESC(tx_bits, "Sample width of the vocproc's capture port.");
 
 static unsigned int q6cvp_map_channels(u8 *mapping, unsigned int channels)
 {
@@ -407,7 +415,7 @@ static unsigned int q6cvp_map_channels(u8 *mapping, unsigned int channels)
 }
 
 static int q6cvp_set_channel_info_one(struct q6voice_session *cvp, u32 param_id,
-				      unsigned int channels)
+				      unsigned int channels, unsigned int bits)
 {
 	struct vss_icommon_cmd_set_param_channel_info cmd = {0};
 
@@ -423,7 +431,7 @@ static int q6cvp_set_channel_info_one(struct q6voice_session *cvp, u32 param_id,
 	cmd.param_data.channel_info.num_channels =
 		q6cvp_map_channels(cmd.param_data.channel_info.channel_mapping,
 				   channels);
-	cmd.param_data.channel_info.bits_per_sample = 16;
+	cmd.param_data.channel_info.bits_per_sample = bits;
 
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
@@ -433,12 +441,12 @@ int q6cvp_set_channel_info(struct q6voice_session *cvp)
 	int ret;
 
 	ret = q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_RX_CHANNEL_INFO,
-					 rx_channels);
+					 rx_channels, rx_bits);
 	if (ret)
 		return ret;
 
 	ret = q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_TX_CHANNEL_INFO,
-					 tx_channels);
+					 tx_channels, tx_bits);
 	if (ret)
 		return ret;
 
@@ -449,13 +457,13 @@ int q6cvp_set_channel_info(struct q6voice_session *cvp)
 	 */
 	return q6cvp_set_channel_info_one(cvp,
 					  VSS_PARAM_VOCPROC_EC_REF_CHANNEL_INFO,
-					  rx_channels);
+					  rx_channels, rx_bits);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_channel_info);
 
 static int q6cvp_set_media_format_one(struct q6voice_session *cvp, u32 param_id,
 				      u16 port_id, unsigned int rate,
-				      unsigned int channels)
+				      unsigned int channels, unsigned int bits)
 {
 	struct vss_icommon_cmd_set_param_media_format cmd = {0};
 
@@ -471,7 +479,7 @@ static int q6cvp_set_media_format_one(struct q6voice_session *cvp, u32 param_id,
 	cmd.media_format.port_id = port_id;
 	cmd.media_format.num_channels =
 		q6cvp_map_channels(cmd.media_format.channel_mapping, channels);
-	cmd.media_format.bits_per_sample = 16;
+	cmd.media_format.bits_per_sample = bits;
 	cmd.media_format.sample_rate = rate;
 
 	pr_info("q6cvp: %s endpoint port %#06x rate %u channels %u bits %u mapping %u,%u\n",
@@ -490,15 +498,27 @@ int q6cvp_set_media_format(struct q6voice_session *cvp, u16 tx_port, u16 rx_port
 
 	ret = q6cvp_set_media_format_one(cvp,
 					 VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO,
-					 rx_port, rx_rate, rx_channels);
+					 rx_port, rx_rate, rx_channels, rx_bits);
 	if (ret)
 		return ret;
 
 	return q6cvp_set_media_format_one(cvp,
 					  VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
-					  tx_port, tx_rate, tx_channels);
+					  tx_port, tx_rate, tx_channels, tx_bits);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_media_format);
+
+/*
+ * Off by default. The vendor's own driver decides this on the render port's
+ * channel count and would send it here, but a capture of a working call on
+ * this board shows it does not -- nothing follows the topology commit. So the
+ * DSP evidently does not want it, whatever the source says, and a command the
+ * working case omits is not one to send speculatively.
+ */
+static bool mfc_config;
+module_param(mfc_config, bool, 0644);
+MODULE_PARM_DESC(mfc_config,
+		 "Set up the media format converter behind a multi-channel render port.");
 
 /*
  * Fan the vocproc's mono render out to however many channels the port takes,
@@ -513,7 +533,7 @@ int q6cvp_set_mfc_config(struct q6voice_session *cvp)
 	int ret;
 
 	channels = clamp_val(rx_channels, 1, VSS_NUM_CHANNELS_MAX);
-	if (channels < 2)
+	if (!mfc_config || channels < 2)
 		return 0;
 
 	mix.hdr.pkt_size = sizeof(mix);
