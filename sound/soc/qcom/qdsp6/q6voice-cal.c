@@ -18,13 +18,12 @@
  * refer to the calibration by that handle plus an address and a length, so the
  * same block can back several registrations.
  *
- * Despite the command being named "map physical", the addresses in it are not
- * CPU physical addresses: the ADSP reaches DDR through its own IOMMU, so what
- * it needs is an address in *its* domain. Everything here is therefore
- * allocated against a device carrying the ADSP's stream id, exactly as the
- * voice mailbox is. Handing over a CPU physical address instead makes the ADSP
- * fault on an address it cannot translate, which resets the board outright --
- * no kernel log, because the kernel is not involved in the failure.
+ * Whatever the ADSP is handed has to be memory it can actually reach, and that
+ * has proven to be the hard part. It is allocated from a reserved pool of its
+ * own rather than from ordinary kernel pages, which is how the vendor arranges
+ * every buffer it shares with the DSP. The addresses are logged before the
+ * command goes out: when this goes wrong the board resets without the kernel
+ * being involved, so anything not already printed is lost.
  *
  * The blob itself is a sequence of parameters the ADSP interprets; the kernel
  * only has to place it somewhere the ADSP can read and describe where it is.
@@ -37,6 +36,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include "q6mvm.h"
@@ -199,6 +199,9 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 	table->block_addr = cpu_to_le64(cal->data_iova);
 	table->block_size = cpu_to_le32(cal->block_size);
 
+	dev_info(dev, "lending %u bytes at %pad, table at %pad\n",
+		 cal->block_size, &cal->data_iova, &cal->table_iova);
+
 	ret = q6mvm_map_memory(mvm, cal->table_iova, sizeof(*table),
 			       &cal->mem_handle);
 	if (ret) {
@@ -242,6 +245,15 @@ static int q6voice_cal_probe(struct platform_device *pdev)
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
 	if (ret)
 		return dev_err_probe(dev, ret, "no 32-bit DMA\n");
+
+	/*
+	 * Without the pool this device has nothing to allocate from that the
+	 * ADSP is known to reach, so fail rather than fall back to ordinary
+	 * pages: getting that wrong takes the board down with it.
+	 */
+	ret = of_reserved_mem_device_init(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "no calibration memory pool\n");
 
 	q6voice_cal_dev = dev;
 	return 0;

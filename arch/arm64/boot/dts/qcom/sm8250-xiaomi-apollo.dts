@@ -212,6 +212,20 @@
 			no-map;
 		};
 
+		/*
+		 * Calibration handed to the ADSP. A pool of its own rather
+		 * than plain kernel pages: the vendor keeps the buffers it
+		 * shares with the DSP in a reserved region, and the DSP has
+		 * never been shown to reach anything else.
+		 */
+		voice_cal_mem: voice-cal-region {
+			compatible = "shared-dma-pool";
+			no-map;
+			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
+			alignment = <0x0 0x400000>;
+			size = <0x0 0x20000>;
+		};
+
 		ramoops@b0000000 {
 			compatible = "ramoops";
 			reg = <0x00 0xb0000000 0x00 0x400000>;
@@ -827,7 +841,7 @@
 	 */
 	q6voicecal: calibration {
 		compatible = "qcom,q6voice-cal";
-		iommus = <&apps_smmu 0x1801 0xf>;
+		memory-region = <&voice_cal_mem>;
 	};
 };
 
