@@ -40,6 +40,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include "q6mvm.h"
+#include "q6voice-common.h"
 #include "q6voice-cal.h"
 
 /* Header the extraction tool puts in front of the calibration. */
@@ -63,6 +64,8 @@ struct q6voice_cal {
 	dma_addr_t data_iova;
 	u32 data_size;		/* what the calibration actually occupies */
 	u32 block_size;		/* what was lent: page aligned, as required */
+	u64 dsp_data_addr;	/* the two above, as the ADSP must be told them */
+	u64 dsp_table_addr;
 
 	void *col_info;
 	u32 col_size;
@@ -195,14 +198,22 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 	if (!cal->table)
 		goto err_free;
 
+	/*
+	 * Both of these cross to the ADSP -- the table address in the command,
+	 * the block address inside the table it then reads -- so both have to
+	 * be addresses the ADSP can resolve, not the ones we see.
+	 */
+	cal->dsp_data_addr = q6voice_dsp_address(dev, cal->data_iova);
+	cal->dsp_table_addr = q6voice_dsp_address(dev, cal->table_iova);
+
 	table = cal->table;
-	table->block_addr = cpu_to_le64(cal->data_iova);
+	table->block_addr = cpu_to_le64(cal->dsp_data_addr);
 	table->block_size = cpu_to_le32(cal->block_size);
 
-	dev_info(dev, "lending %u bytes at %pad, table at %pad\n",
-		 cal->block_size, &cal->data_iova, &cal->table_iova);
+	dev_info(dev, "lending %u bytes at %#llx, table at %#llx\n",
+		 cal->block_size, cal->dsp_data_addr, cal->dsp_table_addr);
 
-	ret = q6mvm_map_memory(mvm, cal->table_iova, sizeof(*table),
+	ret = q6mvm_map_memory(mvm, cal->dsp_table_addr, sizeof(*table),
 			       &cal->mem_handle);
 	if (ret) {
 		dev_err(dev, "failed to lend calibration to the ADSP: %d\n",
@@ -231,7 +242,7 @@ int q6voice_cal_register_vol(struct q6voice_cal *cal,
 	if (!cal)
 		return 0;
 
-	return q6cvp_register_vol_cal(cvp, cal->mem_handle, cal->data_iova,
+	return q6cvp_register_vol_cal(cvp, cal->mem_handle, cal->dsp_data_addr,
 				      cal->data_size, cal->col_info,
 				      cal->col_size);
 }

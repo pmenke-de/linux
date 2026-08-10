@@ -2,6 +2,7 @@
 // Copyright (c) 2020, Stephan Gerhold
 
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -54,6 +55,37 @@ void q6voice_common_set_svc_notifier(void (*notify)(enum q6voice_service_type))
 	q6voice_svc_notifier = notify;
 }
 EXPORT_SYMBOL_GPL(q6voice_common_set_svc_notifier);
+
+/*
+ * Addresses handed to the DSP are not bare addresses. The DSP maps them
+ * through the SMMU itself, so it has to be told which stream to translate
+ * against, and that is carried in the top half of the address: the low bits of
+ * this device's stream id, shifted up out of the way of the address proper.
+ *
+ * Sending a bare address means the DSP translates against stream zero, maps
+ * whatever that lands on, and reads it. On this SoC that resets the board.
+ *
+ * The mask is the vendor's, and is the same across every SoC in that tree; it
+ * is the part of the stream id that selects the context bank.
+ */
+#define Q6VOICE_SMMU_SID_MASK		0xf
+#define Q6VOICE_SMMU_SID_SHIFT		32
+
+u64 q6voice_dsp_address(struct device *dev, dma_addr_t addr)
+{
+	struct of_phandle_args args;
+	u64 sid = 0;
+
+	if (!of_parse_phandle_with_args(dev->of_node, "iommus", "#iommu-cells",
+					0, &args)) {
+		if (args.args_count)
+			sid = args.args[0] & Q6VOICE_SMMU_SID_MASK;
+		of_node_put(args.np);
+	}
+
+	return addr | (sid << Q6VOICE_SMMU_SID_SHIFT);
+}
+EXPORT_SYMBOL_GPL(q6voice_dsp_address);
 
 int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type)
 {

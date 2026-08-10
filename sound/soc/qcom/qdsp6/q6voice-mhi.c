@@ -200,7 +200,14 @@ static int q6voice_mhi_configure(struct q6voice_mhi *ctx)
 	if (ctx->configured || !ctx->iova_pcie)
 		return 0;
 
-	ret = q6mvm_set_mailbox_memory(ctx->iova_adsp, ctx->iova_pcie,
+	/*
+	 * The ADSP resolves what it is given through its own SMMU, so it needs
+	 * the address in the form that says which stream to use. The PCIe
+	 * address is the modem's and is left alone.
+	 */
+	ret = q6mvm_set_mailbox_memory(q6voice_dsp_address(ctx->adsp_dev,
+							   ctx->iova_adsp),
+				       ctx->iova_pcie,
 				       VOICE_MAILBOX_SIZE);
 	if (ret) {
 		/*

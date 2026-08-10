@@ -86,6 +86,13 @@ void q6voice_set_modem_link(const struct q6voice_modem_link *link);
  */
 void q6voice_common_set_svc_notifier(void (*notify)(enum q6voice_service_type));
 
+/*
+ * Turn a DMA address into one the DSP can resolve: see the definition. Use it
+ * for every address that crosses to the DSP, including those inside tables the
+ * DSP reads for itself.
+ */
+u64 q6voice_dsp_address(struct device *dev, dma_addr_t addr);
+
 int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type);
 void q6voice_common_remove(struct apr_device *adev);
 
