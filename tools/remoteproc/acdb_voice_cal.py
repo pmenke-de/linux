@@ -221,8 +221,8 @@ def main():
                     help="dynamic: third key field")
     ap.add_argument("--tx-rate", type=lambda s: int(s, 0), default=8000)
     ap.add_argument("--rx-rate", type=lambda s: int(s, 0), default=8000)
-    ap.add_argument("--step", type=int, default=0,
-                    help="which volume step to emit with -o")
+    ap.add_argument("--step", type=int, default=None,
+                    help="emit only this record, rather than the whole table")
     ap.add_argument("-o", "--output", help="write one step's parameters")
     ap.add_argument("--col-info", help="override the built-in column description")
     ap.add_argument("--raw", action="store_true",
@@ -248,21 +248,33 @@ def main():
     print("  %d parameters, %d bytes of calibration"
           % (sum(len(r) for r in records), total))
 
-    for mid, iid, pid, payload in records[args.step][:8]:
+    for mid, iid, pid, payload in records[0][:8]:
         print("    mid=0x%08x iid=%d pid=0x%08x size=%d"
               % (mid, iid, pid, len(payload)))
 
     if args.output:
         blob = bytearray()
-        for mid, iid, pid, payload in records[args.step]:
+        # An indexed table is looked up in, so all of it has to be there: a
+        # volume table with one of its 765 steps in it is a table the DSP
+        # cannot find a step in. Only a caller asking for one record gets one.
+        wanted = records if args.step is None else [records[args.step]]
+
+        for mid, iid, pid, payload in [p for r in wanted for p in r]:
+            # Every parameter is padded out to a four byte boundary and the
+            # size in its header counts the padding, so that the header after
+            # it starts aligned. The library does this when it assembles the
+            # table and the DSP reads it back the same way: leave it out and
+            # the first parameter whose length is not a multiple of four puts
+            # everything after it four bytes out.
+            pad = -len(payload) % 4
+
             # A table that stores no instance ids describes its parameters
-            # without one; inventing a zero changes where every field after it
-            # is read from.
+            # without one; inventing a zero moves every later field by four.
             if instance:
-                blob += struct.pack("<4I", mid, iid, pid, len(payload))
+                blob += struct.pack("<4I", mid, iid, pid, len(payload) + pad)
             else:
-                blob += struct.pack("<3I", mid, pid, len(payload))
-            blob += payload
+                blob += struct.pack("<3I", mid, pid, len(payload) + pad)
+            blob += payload + b"\0" * pad
             if len(payload) % 4:
                 blob += b"\0" * (4 - len(payload) % 4)
 
@@ -280,8 +292,10 @@ def main():
                 f.write(struct.pack("<4I", 0x43563651, 1, len(col), len(blob)))
                 f.write(col)
                 f.write(blob)
-        print("  wrote step %d to %s (%d bytes%s)"
-              % (args.step, args.output, len(blob),
+        print("  wrote %s to %s (%d bytes%s)"
+              % ("record %d" % args.step if args.step is not None
+                 else "%d records" % len(records),
+                 args.output, len(blob),
                  "" if args.raw else ", %d byte header + %d column"
                  % (16, len(col))))
 
