@@ -52,6 +52,7 @@ struct q6voice_mhi {
 
 	struct dentry *debugfs;
 
+	bool configured;
 	unsigned int votes;
 	struct mutex lock;
 
@@ -102,6 +103,9 @@ DEFINE_SHOW_ATTRIBUTE(q6voice_mhi_mailbox);
  */
 static struct q6voice_mhi *q6voice_mhi_ctx;
 
+/* Defined below; a call reaches for it before the definition is in scope. */
+static int q6voice_mhi_configure(struct q6voice_mhi *ctx);
+
 /*
  * Hold the modem awake while a call runs.
  *
@@ -123,6 +127,12 @@ static int q6voice_mhi_start(void)
 		return 0;
 
 	mutex_lock(&ctx->lock);
+
+	/*
+	 * Last chance to describe the mailbox before it is needed. By now the
+	 * ADSP has been up long enough to listen, which is not true at probe.
+	 */
+	q6voice_mhi_configure(ctx);
 
 	/* No modem bound means no link to hold up; let the call proceed. */
 	if (!ctx->mhi_dev)
@@ -169,6 +179,9 @@ static void q6voice_mhi_unmap_pcie(struct q6voice_mhi *ctx)
 	if (!ctx->iova_pcie)
 		return;
 
+	/* Whatever the ADSP was told described memory that is going away. */
+	ctx->configured = false;
+
 	dma_unmap_resource(ctx->pcie_dev, ctx->iova_pcie, VOICE_MAILBOX_SIZE,
 			   DMA_BIDIRECTIONAL, 0);
 	ctx->iova_pcie = 0;
@@ -184,13 +197,22 @@ static int q6voice_mhi_configure(struct q6voice_mhi *ctx)
 {
 	int ret;
 
+	if (ctx->configured || !ctx->iova_pcie)
+		return 0;
+
 	ret = q6mvm_set_mailbox_memory(ctx->iova_adsp, ctx->iova_pcie,
 				       VOICE_MAILBOX_SIZE);
 	if (ret) {
-		dev_err(ctx->adsp_dev, "failed to configure mailbox: %d\n", ret);
+		/*
+		 * Not fatal, and worth retrying: the ADSP refuses this while it
+		 * is still coming up, and after a restart its services appear
+		 * milliseconds before it is ready to be told anything.
+		 */
+		dev_warn(ctx->adsp_dev, "mailbox not configured yet: %d\n", ret);
 		return ret;
 	}
 
+	ctx->configured = true;
 	dev_info(ctx->adsp_dev, "voice mailbox configured\n");
 	return 0;
 }
@@ -217,8 +239,12 @@ static void q6voice_mhi_svc_up(enum q6voice_service_type type)
 {
 	struct q6voice_mhi *ctx = q6voice_mhi_ctx;
 
-	if (type == Q6VOICE_SERVICE_MVM && ctx)
-		schedule_work(&ctx->reconfig);
+	if (type != Q6VOICE_SERVICE_MVM || !ctx)
+		return;
+
+	/* A service that has just appeared knows nothing yet. */
+	ctx->configured = false;
+	schedule_work(&ctx->reconfig);
 }
 
 static int q6voice_mhi_map_and_configure(struct q6voice_mhi *ctx,
@@ -242,11 +268,12 @@ static int q6voice_mhi_map_and_configure(struct q6voice_mhi *ctx,
 		&ctx->phys, &ctx->iova_adsp, &ctx->iova_pcie,
 		VOICE_MAILBOX_SIZE);
 
-	ret = q6voice_mhi_configure(ctx);
-	if (ret) {
-		q6voice_mhi_unmap_pcie(ctx);
-		return ret;
-	}
+	/*
+	 * Keep the mapping even if the ADSP will not hear it yet -- a call
+	 * tries again before it needs the mailbox, and tearing the mapping
+	 * down here leaves nothing to tell it about later.
+	 */
+	q6voice_mhi_configure(ctx);
 
 	return 0;
 }
