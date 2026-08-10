@@ -25,6 +25,7 @@
 
 #include <linux/async.h>
 #include <linux/debugfs.h>
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
 #include <linux/mhi.h>
@@ -950,6 +951,127 @@ DEFINE_SHOW_ATTRIBUTE(mhi_sat_probe);
  * moved says it is sending; one that has not says it never tried. That splits
  * the fault cleanly in two, which nothing on the host side can.
  */
+/*
+ * How often the remote rings, rather than what it rings with.
+ *
+ * The rings themselves are in memory the remote owns and the host does not
+ * map, and on this SoC reading that memory from here risks a permission fault
+ * that takes the whole board down -- so the buffers stay untouched. The
+ * doorbells alone still separate the two things worth telling apart: a stream
+ * moves them steadily for as long as it runs, while session and control
+ * traffic moves them in bursts around whatever provoked it.
+ */
+#define MHI_SAT_WATCH_INTERVAL_MS	20
+#define MHI_SAT_WATCH_SAMPLES		250	/* five seconds of them */
+
+struct mhi_sat_watch {
+	u32 off;
+	u64 last;
+	unsigned int changes;
+	unsigned int first_ms;
+	unsigned int last_ms;
+	int id;
+	bool ring;
+};
+
+static bool mhi_sat_watch_read(struct mhi_controller *mhi_cntrl, u32 off,
+			       u64 *val)
+{
+	u32 lo, hi;
+
+	if (mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, off, &lo) ||
+	    mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, off + 4, &hi))
+		return false;
+
+	*val = ((u64)hi << 32) | lo;
+	return true;
+}
+
+static int mhi_sat_cadence_show(struct seq_file *s, void *unused)
+{
+	struct mhi_sat_cntrl *sat_cntrl = s->private;
+	struct mhi_controller *mhi_cntrl = sat_cntrl->mhi_cntrl;
+	struct mhi_sat_device *sat_dev;
+	struct mhi_sat_watch *w;
+	unsigned int n = 0, i, j;
+	u32 chdb_off, er_off;
+	int ret;
+
+	ret = mhi_get_channel_doorbell_offset(mhi_cntrl, &chdb_off);
+	if (ret)
+		return ret;
+
+	ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, ERDBOFF, &er_off);
+	if (ret)
+		return ret;
+
+	w = kcalloc(MHI_SAT_MAX_DEVICES + sat_cntrl->er_max + 1, sizeof(*w),
+		    GFP_KERNEL);
+	if (!w)
+		return -ENOMEM;
+
+	mutex_lock(&sat_cntrl->list_mutex);
+	list_for_each_entry(sat_dev, &sat_cntrl->dev_list, node) {
+		struct mhi_device *mhi_dev = sat_dev->mhi_dev;
+
+		w[n].id = mhi_dev->dl_chan_id ?: mhi_dev->ul_chan_id;
+		w[n].off = chdb_off + (8 * w[n].id);
+		n++;
+	}
+	mutex_unlock(&sat_cntrl->list_mutex);
+
+	for (i = sat_cntrl->er_base; i <= sat_cntrl->er_max; i++) {
+		w[n].id = i;
+		w[n].off = er_off + (8 * i);
+		w[n].ring = true;
+		n++;
+	}
+
+	for (i = 0; i < n; i++)
+		mhi_sat_watch_read(mhi_cntrl, w[i].off, &w[i].last);
+
+	for (j = 0; j < MHI_SAT_WATCH_SAMPLES; j++) {
+		unsigned int ms = j * MHI_SAT_WATCH_INTERVAL_MS;
+
+		msleep(MHI_SAT_WATCH_INTERVAL_MS);
+
+		for (i = 0; i < n; i++) {
+			u64 val;
+
+			if (!mhi_sat_watch_read(mhi_cntrl, w[i].off, &val))
+				continue;
+			if (val == w[i].last)
+				continue;
+
+			if (!w[i].changes)
+				w[i].first_ms = ms;
+			w[i].last_ms = ms;
+			w[i].changes++;
+			w[i].last = val;
+		}
+	}
+
+	seq_printf(s, "%u samples over %u ms\n\n", MHI_SAT_WATCH_SAMPLES,
+		   MHI_SAT_WATCH_SAMPLES * MHI_SAT_WATCH_INTERVAL_MS);
+	seq_printf(s, "%-12s %-8s %-9s %-9s %s\n",
+		   "doorbell", "moves", "first ms", "last ms", "mean gap ms");
+
+	for (i = 0; i < n; i++) {
+		unsigned int gap = 0;
+
+		if (w[i].changes > 1)
+			gap = (w[i].last_ms - w[i].first_ms) / (w[i].changes - 1);
+
+		seq_printf(s, "%-5s %-6d %-8u %-9u %-9u %u\n",
+			   w[i].ring ? "ring" : "chan", w[i].id, w[i].changes,
+			   w[i].first_ms, w[i].last_ms, gap);
+	}
+
+	kfree(w);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mhi_sat_cadence);
+
 static int mhi_sat_doorbells_show(struct seq_file *s, void *unused)
 {
 	struct mhi_sat_cntrl *sat_cntrl = s->private;
@@ -1023,6 +1145,8 @@ static void mhi_sat_debugfs_create(struct mhi_sat_cntrl *sat_cntrl)
 			    &mhi_sat_log_fops);
 	debugfs_create_file("doorbells", 0444, sat_cntrl->dbgfs, sat_cntrl,
 			    &mhi_sat_doorbells_fops);
+	debugfs_create_file("cadence", 0444, sat_cntrl->dbgfs, sat_cntrl,
+			    &mhi_sat_cadence_fops);
 	debugfs_create_file("hello", 0400, sat_cntrl->dbgfs, sat_cntrl,
 			    &mhi_sat_hello_fops);
 	debugfs_create_file("probe", 0400, sat_cntrl->dbgfs, sat_cntrl,
