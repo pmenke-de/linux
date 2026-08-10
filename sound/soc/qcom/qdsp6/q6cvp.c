@@ -2,6 +2,7 @@
 // Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
 // Copyright (c) 2020, Stephan Gerhold
 
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/soc/qcom/apr.h>
@@ -30,6 +31,8 @@
 #define VSS_PARAM_VOCPROC_TX_CHANNEL_INFO		0x0001328E
 #define VSS_PARAM_VOCPROC_RX_CHANNEL_INFO		0x0001328F
 #define VSS_NUM_CHANNELS_MAX				32
+#define PCM_CHANNEL_FL					1
+#define PCM_CHANNEL_FR					2
 #define PCM_CHANNEL_FC					3
 
 /*
@@ -262,7 +265,46 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 }
 EXPORT_SYMBOL_GPL(q6cvp_session_create);
 
-static int q6cvp_set_channel_info_one(struct q6voice_session *cvp, u32 param_id)
+/*
+ * What the ports on either side of the vocproc are actually running at. The
+ * DSP is told this so it can match its endpoints to them; describing a port
+ * that runs at 48 kHz stereo as 8 kHz mono gets a vocproc that is created,
+ * enabled and silent. The machine driver pins every backend to 48 kHz S16 and
+ * varies only the channel count, so these are the defaults; they are writable
+ * for boards that route voice somewhere else.
+ */
+static unsigned int rx_rate = 48000;
+module_param(rx_rate, uint, 0644);
+MODULE_PARM_DESC(rx_rate, "Sample rate of the vocproc's render port.");
+
+static unsigned int tx_rate = 48000;
+module_param(tx_rate, uint, 0644);
+MODULE_PARM_DESC(tx_rate, "Sample rate of the vocproc's capture port.");
+
+static unsigned int rx_channels = 2;
+module_param(rx_channels, uint, 0644);
+MODULE_PARM_DESC(rx_channels, "Channel count of the vocproc's render port.");
+
+static unsigned int tx_channels = 1;
+module_param(tx_channels, uint, 0644);
+MODULE_PARM_DESC(tx_channels, "Channel count of the vocproc's capture port.");
+
+static unsigned int q6cvp_map_channels(u8 *mapping, unsigned int channels)
+{
+	channels = clamp_val(channels, 1, VSS_NUM_CHANNELS_MAX);
+
+	if (channels == 1) {
+		mapping[0] = PCM_CHANNEL_FC;
+	} else {
+		mapping[0] = PCM_CHANNEL_FL;
+		mapping[1] = PCM_CHANNEL_FR;
+	}
+
+	return channels;
+}
+
+static int q6cvp_set_channel_info_one(struct q6voice_session *cvp, u32 param_id,
+				      unsigned int channels)
 {
 	struct vss_icommon_cmd_set_param_channel_info cmd = {0};
 
@@ -275,9 +317,10 @@ static int q6cvp_set_channel_info_one(struct q6voice_session *cvp, u32 param_id)
 	cmd.param_data.param_id = param_id;
 	cmd.param_data.param_size = sizeof(cmd.param_data.channel_info);
 
-	cmd.param_data.channel_info.num_channels = 1;
+	cmd.param_data.channel_info.num_channels =
+		q6cvp_map_channels(cmd.param_data.channel_info.channel_mapping,
+				   channels);
 	cmd.param_data.channel_info.bits_per_sample = 16;
-	cmd.param_data.channel_info.channel_mapping[0] = PCM_CHANNEL_FC;
 
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
@@ -286,16 +329,19 @@ int q6cvp_set_channel_info(struct q6voice_session *cvp)
 {
 	int ret;
 
-	ret = q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_RX_CHANNEL_INFO);
+	ret = q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_RX_CHANNEL_INFO,
+					 rx_channels);
 	if (ret)
 		return ret;
 
-	return q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_TX_CHANNEL_INFO);
+	return q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_TX_CHANNEL_INFO,
+					  tx_channels);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_channel_info);
 
 static int q6cvp_set_media_format_one(struct q6voice_session *cvp, u32 param_id,
-				      u16 port_id)
+				      u16 port_id, unsigned int rate,
+				      unsigned int channels)
 {
 	struct vss_icommon_cmd_set_param_media_format cmd = {0};
 
@@ -309,10 +355,10 @@ static int q6cvp_set_media_format_one(struct q6voice_session *cvp, u32 param_id,
 	cmd.param_hdr.param_size = sizeof(cmd.media_format);
 
 	cmd.media_format.port_id = port_id;
-	cmd.media_format.num_channels = 1;
+	cmd.media_format.num_channels =
+		q6cvp_map_channels(cmd.media_format.channel_mapping, channels);
 	cmd.media_format.bits_per_sample = 16;
-	cmd.media_format.sample_rate = 8000;
-	cmd.media_format.channel_mapping[0] = PCM_CHANNEL_FC;
+	cmd.media_format.sample_rate = rate;
 
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
@@ -323,13 +369,13 @@ int q6cvp_set_media_format(struct q6voice_session *cvp, u16 tx_port, u16 rx_port
 
 	ret = q6cvp_set_media_format_one(cvp,
 					 VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO,
-					 rx_port);
+					 rx_port, rx_rate, rx_channels);
 	if (ret)
 		return ret;
 
 	return q6cvp_set_media_format_one(cvp,
 					  VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
-					  tx_port);
+					  tx_port, tx_rate, tx_channels);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_media_format);
 
