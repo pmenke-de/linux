@@ -270,16 +270,39 @@ err_release:
 EXPORT_SYMBOL_GPL(q6voice_cal_load);
 
 int q6voice_cal_register_vol(struct q6voice_cal *cal,
-			     struct q6voice_session *cvp)
+			     struct q6voice_session *cvp, bool instance)
 {
 	if (!cal)
 		return 0;
 
-	return q6cvp_register_vol_cal(cvp, cal->mem_handle, cal->dsp_data_addr,
-				      cal->data_size, cal->col_info,
-				      cal->col_size);
+	return q6cvp_register_vol_cal(cvp, instance, cal->mem_handle,
+				      cal->dsp_data_addr, cal->data_size,
+				      cal->col_info, cal->col_size);
 }
 EXPORT_SYMBOL_GPL(q6voice_cal_register_vol);
+
+int q6voice_cal_register_cal(struct q6voice_cal *cal,
+			     struct q6voice_session *cvp, bool instance)
+{
+	if (!cal)
+		return 0;
+
+	return q6cvp_register_cal(cvp, instance, cal->mem_handle,
+				  cal->dsp_data_addr, cal->data_size,
+				  cal->col_info, cal->col_size);
+}
+EXPORT_SYMBOL_GPL(q6voice_cal_register_cal);
+
+int q6voice_cal_register_dev_cfg(struct q6voice_cal *cal,
+				 struct q6voice_session *cvp)
+{
+	if (!cal)
+		return 0;
+
+	return q6cvp_register_dev_cfg(cvp, cal->mem_handle, cal->dsp_data_addr,
+				      cal->data_size);
+}
+EXPORT_SYMBOL_GPL(q6voice_cal_register_dev_cfg);
 
 static int q6voice_cal_probe(struct platform_device *pdev)
 {

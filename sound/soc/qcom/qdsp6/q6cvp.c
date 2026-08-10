@@ -122,6 +122,31 @@ struct vss_ivolume_cmd_mute_v2 {
 #define VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA	0x00011374
 #define VSS_IVOCPROC_CMD_DEREGISTER_VOL_CALIBRATION_DATA	0x00011375
 
+#define VSS_IVOCPROC_CMD_REGISTER_DEVICE_CONFIG		0x00011371
+#define VSS_IVOCPROC_CMD_REGISTER_CALIBRATION_DATA_V2	0x00011373
+
+/*
+ * Calibration comes in two eras. The older commands take a table whose rows
+ * are keyed by device and volume step; the newer ones take a table that also
+ * carries a module instance per parameter, and the two are not
+ * interchangeable -- handing an instance table to the command that expects the
+ * older one is rejected as a bad parameter, which reads as bad calibration
+ * data when the data is fine. Which applies goes with the vocproc's own
+ * version, so it is decided the same way the create command is.
+ */
+#define VSS_IVOCPROC_CMD_REGISTER_STATIC_CALIBRATION_DATA	0x00013079
+#define VSS_IVOCPROC_CMD_REGISTER_DYNAMIC_CALIBRATION_DATA	0x0001307B
+
+/* No column description: the device configuration is not an indexed table. */
+struct vss_ivocproc_cmd_register_device_config {
+	struct apr_hdr hdr;
+
+	u32 mem_handle;
+	u32 mem_address_lsw;
+	u32 mem_address_msw;
+	u32 mem_size;
+} __packed;
+
 /*
  * Largest column description the ADSP accepts. The columns say how the
  * calibration table is indexed -- which is what lets the ADSP turn a volume
@@ -449,9 +474,9 @@ EXPORT_SYMBOL_GPL(q6cvp_set_device_mute);
  * VSS_IVOLUME_CMD_SET_STEP fails -- which is what a call with everything else
  * accepted and no audible downlink looks like from here.
  */
-int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
-			   phys_addr_t phys, u32 size,
-			   const void *col_info, u32 col_size)
+static int q6cvp_register_table(struct q6voice_session *cvp, u32 opcode,
+				u32 mem_handle, phys_addr_t phys, u32 size,
+				const void *col_info, u32 col_size)
 {
 	struct vss_ivocproc_cmd_register_vol_cal_data cmd = {0};
 
@@ -459,7 +484,7 @@ int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
 		return -EINVAL;
 
 	cmd.hdr.pkt_size = sizeof(cmd);
-	cmd.hdr.opcode = VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA;
+	cmd.hdr.opcode = opcode;
 
 	cmd.cal_mem_handle = mem_handle;
 	cmd.cal_mem_address_lsw = lower_32_bits(phys);
@@ -469,7 +494,55 @@ int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
 
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
+
+/*
+ * The per-step table: what a volume step is resolved through. @instance says
+ * which era the vocproc belongs to -- see the opcodes above.
+ */
+int q6cvp_register_vol_cal(struct q6voice_session *cvp, bool instance,
+			   u32 mem_handle, phys_addr_t phys, u32 size,
+			   const void *col_info, u32 col_size)
+{
+	return q6cvp_register_table(cvp,
+		instance ? VSS_IVOCPROC_CMD_REGISTER_DYNAMIC_CALIBRATION_DATA :
+			   VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA,
+		mem_handle, phys, size, col_info, col_size);
+}
 EXPORT_SYMBOL_GPL(q6cvp_register_vol_cal);
+
+/* Everything about the vocproc that does not vary with the volume step. */
+int q6cvp_register_cal(struct q6voice_session *cvp, bool instance,
+		       u32 mem_handle, phys_addr_t phys, u32 size,
+		       const void *col_info, u32 col_size)
+{
+	return q6cvp_register_table(cvp,
+		instance ? VSS_IVOCPROC_CMD_REGISTER_STATIC_CALIBRATION_DATA :
+			   VSS_IVOCPROC_CMD_REGISTER_CALIBRATION_DATA_V2,
+		mem_handle, phys, size, col_info, col_size);
+}
+EXPORT_SYMBOL_GPL(q6cvp_register_cal);
+
+/*
+ * What the vocproc's endpoints are, as opposed to how they are processed. The
+ * vendor registers this before either calibration table, and it is the only
+ * one of the three with no column description: it is not an indexed table.
+ */
+int q6cvp_register_dev_cfg(struct q6voice_session *cvp, u32 mem_handle,
+			   phys_addr_t phys, u32 size)
+{
+	struct vss_ivocproc_cmd_register_device_config cmd = {0};
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_IVOCPROC_CMD_REGISTER_DEVICE_CONFIG;
+
+	cmd.mem_handle = mem_handle;
+	cmd.mem_address_lsw = lower_32_bits(phys);
+	cmd.mem_address_msw = upper_32_bits(phys);
+	cmd.mem_size = size;
+
+	return q6voice_common_send(cvp, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvp_register_dev_cfg);
 
 int q6cvp_deregister_vol_cal(struct q6voice_session *cvp)
 {

@@ -16,7 +16,15 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 				     struct q6voice_session *mvm);
 void q6voice_cal_free(struct q6voice_cal *cal);
 
+/*
+ * @instance says which era of registration command the vocproc expects; it
+ * goes with the vocproc's version, the same way the create command does.
+ */
 int q6voice_cal_register_vol(struct q6voice_cal *cal,
-			     struct q6voice_session *cvp);
+			     struct q6voice_session *cvp, bool instance);
+int q6voice_cal_register_cal(struct q6voice_cal *cal,
+			     struct q6voice_session *cvp, bool instance);
+int q6voice_cal_register_dev_cfg(struct q6voice_cal *cal,
+				 struct q6voice_session *cvp);
 
 #endif /*_Q6_VOICE_CAL_H */

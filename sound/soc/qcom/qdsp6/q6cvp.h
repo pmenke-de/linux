@@ -19,9 +19,14 @@ int q6cvp_topology_commit(struct q6voice_session *cvp);
 int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step, u16 ramp_ms);
 int q6cvp_set_device_mute(struct q6voice_session *cvp, u16 direction, bool mute,
 			  u16 ramp_ms);
-int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
-			   phys_addr_t phys, u32 size,
+int q6cvp_register_vol_cal(struct q6voice_session *cvp, bool instance,
+			   u32 mem_handle, phys_addr_t phys, u32 size,
 			   const void *col_info, u32 col_size);
+int q6cvp_register_cal(struct q6voice_session *cvp, bool instance,
+		       u32 mem_handle, phys_addr_t phys, u32 size,
+		       const void *col_info, u32 col_size);
+int q6cvp_register_dev_cfg(struct q6voice_session *cvp, u32 mem_handle,
+			   phys_addr_t phys, u32 size);
 int q6cvp_deregister_vol_cal(struct q6voice_session *cvp);
 int q6cvp_enable(struct q6voice_session *cvp, bool enable);
 

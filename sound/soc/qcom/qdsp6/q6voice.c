@@ -35,7 +35,9 @@ struct q6voice {
 	/* cached so the version is queried once, not per call */
 	char cvd_version[32];
 	/* lent to the ADSP once and referred to by handle thereafter */
-	struct q6voice_cal *cal;
+	struct q6voice_cal *dev_cfg;	/* what the endpoints are */
+	struct q6voice_cal *cal;	/* the vocproc, other than by step */
+	struct q6voice_cal *vol_cal;	/* the vocproc, per volume step */
 	bool cal_tried;
 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
 };
@@ -46,7 +48,15 @@ struct q6voice {
  * MVM service has to be up to accept the memory, and it is not when q6voice
  * is created.
  */
-#define Q6VOICE_CAL_FIRMWARE	"qcom/q6voice-vol-cal.bin"
+/*
+ * The three tables, in the order the vendor registers them: what the endpoints
+ * are, then everything about the vocproc that does not vary with the volume
+ * step, then what does. A volume table is an overlay on a vocproc that has
+ * already been told the first two, which is why the order is not incidental.
+ */
+#define Q6VOICE_DEV_CFG_FIRMWARE	"qcom/q6voice-devcfg.bin"
+#define Q6VOICE_CAL_FIRMWARE		"qcom/q6voice-cal.bin"
+#define Q6VOICE_VOL_CAL_FIRMWARE	"qcom/q6voice-vol-cal.bin"
 
 /*
  * Downlink volume for a call. Android's HAL maps the user-facing volume onto
@@ -287,12 +297,27 @@ configured:
 	 */
 	if (cal_level >= Q6VOICE_CAL_LEND && !p->v->cal_tried) {
 		p->v->cal_tried = true;
+		p->v->dev_cfg = q6voice_cal_load(dev, Q6VOICE_DEV_CFG_FIRMWARE,
+						 mvm);
 		p->v->cal = q6voice_cal_load(dev, Q6VOICE_CAL_FIRMWARE, mvm);
+		p->v->vol_cal = q6voice_cal_load(dev, Q6VOICE_VOL_CAL_FIRMWARE,
+						 mvm);
 	}
 
 	if (cal_level >= Q6VOICE_CAL_REGISTER) {
-		dev_info(dev, "registering volume calibration\n");
-		ret = q6voice_cal_register_vol(p->v->cal, cvp);
+		bool instance = q6voice_cvp_create_v3(p->v->cvd_version);
+
+		ret = q6voice_cal_register_dev_cfg(p->v->dev_cfg, cvp);
+		if (ret)
+			dev_warn(dev, "failed to register device config: %d\n",
+				 ret);
+
+		ret = q6voice_cal_register_cal(p->v->cal, cvp, instance);
+		if (ret)
+			dev_warn(dev, "failed to register calibration: %d\n",
+				 ret);
+
+		ret = q6voice_cal_register_vol(p->v->vol_cal, cvp, instance);
 		if (ret)
 			dev_warn(dev, "failed to register volume calibration: %d\n",
 				 ret);
@@ -480,7 +505,9 @@ static void q6voice_free(void *data)
 		mutex_destroy(&p->lock);
 	}
 
+	q6voice_cal_free(v->dev_cfg);
 	q6voice_cal_free(v->cal);
+	q6voice_cal_free(v->vol_cal);
 }
 
 struct q6voice *q6voice_create(struct device *dev)

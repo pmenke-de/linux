@@ -36,6 +36,20 @@ FAMILIES = {
     "static": ("VSTILUT0", "VSTIOFST", "VSTICDFT", "VSTICDOT", 6, 4),
 }
 
+# The device configuration is a simpler shape: its LUT points straight at a
+# CDFT and CDOT record with no per-step indirection, and its parameters carry
+# no instance id. Keyed by the device pair alone.
+DEVCFG = ("VDPILUT0", "VDPICDFT", "VDPICDOT", 4, 2)
+
+# Which table each of the three registrations wants, and how it is described.
+# The ADSP takes them in this order and a volume table is an overlay on the
+# other two, so emitting one without the others is not much use.
+KINDS = {
+    "devcfg": (None, None),
+    "cal": ("static", "vocproc_inst"),
+    "volcal": ("dynamic", "volume"),
+}
+
 # How the calibration table is indexed. The ADSP needs this to turn a volume
 # step into a row, and it does not come from the calibration file: the vendor
 # library carries it as static data. These are that data, read out of
@@ -156,11 +170,50 @@ def extract(path, family, key):
     return records
 
 
+def extract_devcfg(path, key):
+    """Walk the device configuration tables, which have no per-step level."""
+    with open(path, "rb") as f:
+        data = f.read()
+
+    pools = {name: payload for name, _, _, payload in chunks(data)}
+    lut_n, cdft_n, cdot_n, stride, nkeys = DEVCFG
+
+    missing = [n for n in (lut_n, cdft_n, cdot_n, "DATAPOOL") if n not in pools]
+    if missing:
+        raise SystemExit("%s: missing tables %s" % (path, ", ".join(missing)))
+
+    lut, cdft, cdot = pools[lut_n], pools[cdft_n], pools[cdot_n]
+    pool = pools["DATAPOOL"]
+
+    rec = lookup(lut, stride, nkeys, key)
+    if rec is None:
+        raise SystemExit("no device config for key %s"
+                         % [hex(k) for k in key])
+
+    cdft_off, cdot_off = rec[nkeys], rec[nkeys + 1]
+    n_fmt = u32(cdft, cdft_off)
+    n_off = u32(cdot, cdot_off)
+    if n_fmt != n_off:
+        raise SystemExit("device config: CDFT says %d params, CDOT says %d"
+                         % (n_fmt, n_off))
+
+    params = []
+    for k in range(n_fmt):
+        mid, pid = struct.unpack_from("<2I", cdft, cdft_off + 4 + k * 8)
+        off = u32(cdot, cdot_off + 4 + k * 4)
+        size = u32(pool, off)
+        # No instance in this table; the DSP is told zero.
+        params.append((mid, 0, pid, pool[off + 4:off + 4 + size]))
+
+    return [params]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("acdb")
-    ap.add_argument("--family", choices=sorted(FAMILIES), default="dynamic")
+    ap.add_argument("--kind", choices=sorted(KINDS), default="volcal",
+                    help="which of the three registrations to emit for")
     ap.add_argument("--tx", type=lambda s: int(s, 0), required=True)
     ap.add_argument("--rx", type=lambda s: int(s, 0), required=True)
     ap.add_argument("--flag", type=lambda s: int(s, 0), default=0,
@@ -175,14 +228,20 @@ def main():
                     help="omit the header the kernel expects")
     args = ap.parse_args()
 
-    if args.family == "dynamic":
+    family, columns = KINDS[args.kind]
+
+    if family is None:
+        key = (args.tx, args.rx)
+        records = extract_devcfg(args.acdb, key)
+    elif family == "dynamic":
         key = (args.tx, args.rx, args.flag)
+        records = extract(args.acdb, family, key)
     else:
         key = (args.tx, args.rx, args.tx_rate, args.rx_rate)
+        records = extract(args.acdb, family, key)
 
-    records = extract(args.acdb, args.family, key)
     print("%s: %d records for key %s"
-          % (args.family, len(records), [hex(k) for k in key]))
+          % (args.kind, len(records), [hex(k) for k in key]))
 
     total = sum(len(p[3]) for r in records for p in r)
     print("  %d parameters, %d bytes of calibration"
@@ -204,7 +263,7 @@ def main():
             with open(args.col_info, "rb") as f:
                 col = f.read()
         else:
-            col = column_info("volume")
+            col = column_info(columns) if columns else b""
 
         with open(args.output, "wb") as f:
             if args.raw:
