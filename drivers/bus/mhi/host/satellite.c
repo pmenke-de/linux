@@ -934,6 +934,80 @@ out:
 }
 DEFINE_SHOW_ATTRIBUTE(mhi_sat_probe);
 
+/*
+ * Is the remote actually talking to the device?
+ *
+ * Once its channels are started the remote drives them itself: it writes the
+ * doorbell registers in the device's own address space and reads its events
+ * straight out of a ring the host must not touch. None of that is visible from
+ * here, so a remote that has been given everything and does nothing looks
+ * exactly like one that is working -- which is the state this board is in, with
+ * a voice call established and not one byte crossing the mailbox.
+ *
+ * The doorbells themselves are readable, though. They live in the device's
+ * MMIO, which the host maps, and they hold the last value written. Read them
+ * twice around something the remote should be doing, and a value that has
+ * moved says it is sending; one that has not says it never tried. That splits
+ * the fault cleanly in two, which nothing on the host side can.
+ */
+static int mhi_sat_doorbells_show(struct seq_file *s, void *unused)
+{
+	struct mhi_sat_cntrl *sat_cntrl = s->private;
+	struct mhi_controller *mhi_cntrl = sat_cntrl->mhi_cntrl;
+	struct mhi_sat_device *sat_dev;
+	u32 chdb_off, er_off;
+	int ret;
+
+	ret = mhi_get_channel_doorbell_offset(mhi_cntrl, &chdb_off);
+	if (ret) {
+		seq_printf(s, "cannot read the doorbell offset: %d\n", ret);
+		return 0;
+	}
+
+	ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, ERDBOFF, &er_off);
+	if (ret) {
+		seq_printf(s, "cannot read the event doorbell offset: %d\n", ret);
+		return 0;
+	}
+
+	seq_printf(s, "%-14s %-10s %s\n", "doorbell", "offset", "value");
+
+	mutex_lock(&sat_cntrl->list_mutex);
+	list_for_each_entry(sat_dev, &sat_cntrl->dev_list, node) {
+		struct mhi_device *mhi_dev = sat_dev->mhi_dev;
+		int chan = mhi_dev->dl_chan_id ?: mhi_dev->ul_chan_id;
+		u32 off = chdb_off + (8 * chan);
+		u32 lo, hi;
+
+		if (mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, off, &lo) ||
+		    mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, off + 4, &hi)) {
+			seq_printf(s, "chan %-9d 0x%08x unreadable\n", chan, off);
+			continue;
+		}
+
+		seq_printf(s, "chan %-9d 0x%08x 0x%08x%08x%s\n", chan, off, hi, lo,
+			   sat_dev->chan_started ? "" : " (not started)");
+	}
+	mutex_unlock(&sat_cntrl->list_mutex);
+
+	/* The rings the remote was handed, so its own consumption shows too. */
+	for (ret = sat_cntrl->er_base; ret <= sat_cntrl->er_max; ret++) {
+		u32 off = er_off + (8 * ret);
+		u32 lo, hi;
+
+		if (mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, off, &lo) ||
+		    mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, off + 4, &hi)) {
+			seq_printf(s, "ring %-9d 0x%08x unreadable\n", ret, off);
+			continue;
+		}
+
+		seq_printf(s, "ring %-9d 0x%08x 0x%08x%08x\n", ret, off, hi, lo);
+	}
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mhi_sat_doorbells);
+
 static void mhi_sat_debugfs_create(struct mhi_sat_cntrl *sat_cntrl)
 {
 	char name[32];
@@ -947,6 +1021,8 @@ static void mhi_sat_debugfs_create(struct mhi_sat_cntrl *sat_cntrl)
 			    &mhi_sat_status_fops);
 	debugfs_create_file("log", 0444, sat_cntrl->dbgfs, sat_cntrl,
 			    &mhi_sat_log_fops);
+	debugfs_create_file("doorbells", 0444, sat_cntrl->dbgfs, sat_cntrl,
+			    &mhi_sat_doorbells_fops);
 	debugfs_create_file("hello", 0400, sat_cntrl->dbgfs, sat_cntrl,
 			    &mhi_sat_hello_fops);
 	debugfs_create_file("probe", 0400, sat_cntrl->dbgfs, sat_cntrl,
