@@ -216,12 +216,16 @@ static void q6voice_session_callback(struct q6voice_session *s,
 }
 
 /*
- * Send a command that is not tied to a session (dest_port 0). Used for the
- * mailbox memory configuration, which the ADSP accepts before any call exists.
- * @size is the full packet size including the header.
+ * Send a command whose reply comes back to the service rather than to a
+ * session. @dest_port selects what inside the ADSP is being addressed: zero
+ * for the service itself, as the mailbox configuration uses, or a session
+ * handle for commands that belong to an existing session even though their
+ * reply carries its own payload. @size is the full packet size including the
+ * header.
  */
 static int q6voice_send_svc(enum q6voice_service_type type, struct apr_hdr *hdr,
-			    u32 size, u32 rsp_opcode, void *rsp, u32 rsp_size)
+			    u32 size, u16 dest_port, u32 rsp_opcode, void *rsp,
+			    u32 rsp_size)
 {
 	struct q6voice_service *svc;
 	unsigned long flags;
@@ -240,7 +244,7 @@ static int q6voice_send_svc(enum q6voice_service_type type, struct apr_hdr *hdr,
 				       APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
 	hdr->pkt_size = size;
 	hdr->src_port = Q6VOICE_SVC_PORT;
-	hdr->dest_port = 0;
+	hdr->dest_port = dest_port;
 	hdr->token = 0;
 
 	mutex_lock(&svc->svc_lock);
@@ -281,7 +285,7 @@ out:
 int q6voice_common_send_svc(enum q6voice_service_type type, struct apr_hdr *hdr,
 			    u32 size)
 {
-	return q6voice_send_svc(type, hdr, size, 0, NULL, 0);
+	return q6voice_send_svc(type, hdr, size, 0, 0, NULL, 0);
 }
 EXPORT_SYMBOL_GPL(q6voice_common_send_svc);
 
@@ -289,9 +293,26 @@ int q6voice_common_send_svc_rsp(enum q6voice_service_type type,
 				struct apr_hdr *hdr, u32 size, u32 rsp_opcode,
 				void *rsp, u32 rsp_size)
 {
-	return q6voice_send_svc(type, hdr, size, rsp_opcode, rsp, rsp_size);
+	return q6voice_send_svc(type, hdr, size, 0, rsp_opcode, rsp, rsp_size);
 }
 EXPORT_SYMBOL_GPL(q6voice_common_send_svc_rsp);
+
+/*
+ * As above, but addressed to a session. Lending the ADSP memory is such a
+ * command: it belongs to the MVM session, yet answers with a handle of its own
+ * rather than a plain result. Addressing it to the service instead leaves the
+ * ADSP with a command for nothing in particular, and it stops answering
+ * altogether.
+ */
+int q6voice_common_send_svc_rsp_port(enum q6voice_service_type type,
+				     struct apr_hdr *hdr, u32 size,
+				     u16 dest_port, u32 rsp_opcode, void *rsp,
+				     u32 rsp_size)
+{
+	return q6voice_send_svc(type, hdr, size, dest_port, rsp_opcode, rsp,
+				rsp_size);
+}
+EXPORT_SYMBOL_GPL(q6voice_common_send_svc_rsp_port);
 
 int q6voice_common_callback(struct apr_device *adev, const struct apr_resp_pkt *data)
 {

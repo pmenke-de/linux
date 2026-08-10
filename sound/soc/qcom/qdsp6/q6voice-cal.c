@@ -8,6 +8,10 @@
  * The tables come from the calibration database the board shipped with, which
  * lives in userspace, so they arrive here as firmware.
  *
+ * The memory is lent through the MVM session, not to the audio service at
+ * large: a memory command addressed to the service belongs to nothing, and the
+ * ADSP answers no further commands at all afterwards.
+ *
  * Handing them over is a two step affair. The ADSP is first lent the memory --
  * through a table describing the blocks, which is why there are two
  * allocations below -- and answers with a handle. Individual commands then
@@ -90,13 +94,13 @@ void q6voice_cal_free(struct q6voice_cal *cal)
 	if (!cal)
 		return;
 
-	if (cal->mem_handle) {
-		int ret = q6mvm_unmap_memory(cal->mem_handle);
-
-		if (ret)
-			dev_warn(cal->dev, "failed to unmap calibration: %d\n",
-				 ret);
-	}
+	/*
+	 * No unmap: that command has to be addressed to the MVM session that
+	 * lent the memory, and by the time calibration is freed the call --
+	 * and the session -- are long gone. Addressing it to the service
+	 * instead is what wedged the ADSP in the first place. The mapping goes
+	 * away with the session anyway.
+	 */
 
 	if (cal->table)
 		dma_free_coherent(cal->dev, PAGE_SIZE, cal->table,
@@ -114,7 +118,8 @@ EXPORT_SYMBOL_GPL(q6voice_cal_free);
  * there is none installed, which is not an error: calls still work, they are
  * just stuck at whatever volume the vocproc defaults to.
  */
-struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
+struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
+				     struct q6voice_session *mvm)
 {
 	const struct q6voice_cal_file_hdr *hdr;
 	struct q6voice_cal_table *table;
@@ -194,7 +199,7 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
 	table->block_addr = cpu_to_le64(cal->data_iova);
 	table->block_size = cpu_to_le32(cal->block_size);
 
-	ret = q6mvm_map_memory(cal->table_iova, sizeof(*table),
+	ret = q6mvm_map_memory(mvm, cal->table_iova, sizeof(*table),
 			       &cal->mem_handle);
 	if (ret) {
 		dev_err(dev, "failed to lend calibration to the ADSP: %d\n",

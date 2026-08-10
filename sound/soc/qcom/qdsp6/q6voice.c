@@ -234,7 +234,7 @@ static int q6voice_path_start(struct q6voice_path *p)
 	 */
 	if (!p->v->cal_tried) {
 		p->v->cal_tried = true;
-		p->v->cal = q6voice_cal_load(dev, Q6VOICE_CAL_FIRMWARE);
+		p->v->cal = q6voice_cal_load(dev, Q6VOICE_CAL_FIRMWARE, mvm);
 	}
 
 	ret = q6voice_cal_register_vol(p->v->cal, cvp);

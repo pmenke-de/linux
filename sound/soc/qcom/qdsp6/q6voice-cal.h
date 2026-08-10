@@ -12,7 +12,8 @@ struct q6voice_session;
  * Returns NULL when no calibration is installed for the board, which callers
  * should treat as "carry on without it" rather than as a failure.
  */
-struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name);
+struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
+				     struct q6voice_session *mvm);
 void q6voice_cal_free(struct q6voice_cal *cal);
 
 int q6voice_cal_register_vol(struct q6voice_cal *cal,

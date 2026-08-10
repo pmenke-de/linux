@@ -95,6 +95,11 @@ int q6voice_common_send_svc(enum q6voice_service_type type, struct apr_hdr *hdr,
 int q6voice_common_send_svc_rsp(enum q6voice_service_type type,
 				struct apr_hdr *hdr, u32 size, u32 rsp_opcode,
 				void *rsp, u32 rsp_size);
+/* As above, addressed to a session rather than to the service itself. */
+int q6voice_common_send_svc_rsp_port(enum q6voice_service_type type,
+				     struct apr_hdr *hdr, u32 size,
+				     u16 dest_port, u32 rsp_opcode, void *rsp,
+				     u32 rsp_size);
 
 struct q6voice_session *q6voice_session_create(enum q6voice_service_type type,
 					       enum q6voice_path_type path,
