@@ -286,6 +286,11 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 	cmd.vocproc_mode = VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING;
 	cmd.ec_ref_port_id = VSS_IVOCPROC_PORT_ID_NONE;
 
+	pr_info("q6cvp: create%s tx_port %#06x rx_port %#06x tx_topo %#010x rx_topo %#010x direction %u mode %#010x ec_ref %#06x profile %#010x\n",
+		create_v3 ? " v3" : " v2", cmd.tx_port_id, cmd.rx_port_id,
+		cmd.tx_topology_id, cmd.rx_topology_id, cmd.direction,
+		cmd.vocproc_mode, cmd.ec_ref_port_id, cmd.profile_id);
+
 	return q6voice_session_create(Q6VOICE_SERVICE_CVP, path, &cmd.hdr);
 }
 EXPORT_SYMBOL_GPL(q6cvp_session_create);
@@ -384,6 +389,13 @@ static int q6cvp_set_media_format_one(struct q6voice_session *cvp, u32 param_id,
 		q6cvp_map_channels(cmd.media_format.channel_mapping, channels);
 	cmd.media_format.bits_per_sample = 16;
 	cmd.media_format.sample_rate = rate;
+
+	pr_info("q6cvp: %s endpoint port %#06x rate %u channels %u bits %u mapping %u,%u\n",
+		param_id == VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO ? "rx" : "tx",
+		port_id, cmd.media_format.sample_rate,
+		cmd.media_format.num_channels, cmd.media_format.bits_per_sample,
+		cmd.media_format.channel_mapping[0],
+		cmd.media_format.channel_mapping[1]);
 
 	return q6voice_common_send(cvp, &cmd.hdr);
 }

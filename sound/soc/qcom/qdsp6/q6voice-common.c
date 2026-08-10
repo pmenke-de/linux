@@ -436,6 +436,44 @@ int q6voice_common_callback(struct apr_device *adev, const struct apr_resp_pkt *
 }
 EXPORT_SYMBOL_GPL(q6voice_common_callback);
 
+/*
+ * Every command to the DSP passes through here, so this is the one place a
+ * whole call's conversation can be seen in order. Off by default: it is a line
+ * per command at a point where a call is being set up, and only useful when
+ * comparing the sequence against a working one.
+ */
+static bool trace;
+module_param(trace, bool, 0644);
+MODULE_PARM_DESC(trace, "Log every command sent to the DSP and its result.");
+
+static const char *q6voice_service_name(enum q6voice_service_type type)
+{
+	switch (type) {
+	case Q6VOICE_SERVICE_MVM:
+		return "MVM";
+	case Q6VOICE_SERVICE_CVP:
+		return "CVP";
+	case Q6VOICE_SERVICE_CVS:
+		return "CVS";
+	default:
+		return "???";
+	}
+}
+
+static void q6voice_trace(struct q6voice_session *s, struct apr_hdr *hdr,
+			  int ret)
+{
+	if (!trace)
+		return;
+
+	dev_info(s->dev,
+		 "%s opcode %#010x src %#06x dst %#06x size %u -> %s (%u)\n",
+		 q6voice_service_name(s->svc->type), hdr->opcode, hdr->src_port,
+		 hdr->dest_port, hdr->pkt_size,
+		 ret == -ETIMEDOUT ? "timeout" : ret ? "failed" : "ok",
+		 s->result);
+}
+
 int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr)
 {
 	unsigned long flags;
@@ -460,8 +498,11 @@ int q6voice_common_send(struct q6voice_session *s, struct apr_hdr *hdr)
 				 msecs_to_jiffies(TIMEOUT_MS));
 	if (!ret) {
 		s->expected_opcode = 0;
+		q6voice_trace(s, hdr, -ETIMEDOUT);
 		return -ETIMEDOUT;
 	}
+
+	q6voice_trace(s, hdr, s->result ? -EIO : 0);
 
 	if (s->result > 0) {
 		dev_err(s->dev, "command %#x failed with error %d\n",
