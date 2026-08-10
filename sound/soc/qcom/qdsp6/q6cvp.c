@@ -214,6 +214,11 @@ struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
 	char name[20];
 } __packed;
 
+static bool bypass_topology = true;
+module_param(bypass_topology, bool, 0644);
+MODULE_PARM_DESC(bypass_topology,
+		 "Create the vocproc with no processing topology (default), rather than the echo-cancelling one, which needs calibration this driver cannot supply yet.");
+
 struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 					     u16 tx_port, u16 rx_port,
 					     bool create_v3)
@@ -231,9 +236,20 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 		VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V3 :
 		VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2;
 
-	/* TODO: Implement calibration */
-	cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
-	cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
+	/*
+	 * The processing topologies are chains of modules -- echo cancellation,
+	 * noise suppression -- that expect their parameters to come from
+	 * calibration we do not have. Asking for them without it gets a vocproc
+	 * that is created, enabled, and produces nothing. NONE is the
+	 * pass-through: no modules, no parameters, just the audio.
+	 */
+	if (bypass_topology) {
+		cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
+		cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
+	} else {
+		cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
+		cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
+	}
 
 	cmd.direction = VSS_IVOCPROC_DIRECTION_RX_TX;
 	cmd.tx_port_id = tx_port;
