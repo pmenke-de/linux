@@ -103,6 +103,18 @@ struct vss_icommon_cmd_set_param_media_format {
 #define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V3	0x00013169
 
 #define VSS_IVOLUME_CMD_SET_STEP			0x000112C2
+#define VSS_IVOLUME_CMD_MUTE_V2				0x0001138B
+
+#define VSS_IVOLUME_MUTE_OFF				0
+#define VSS_IVOLUME_MUTE_ON				1
+
+struct vss_ivolume_cmd_mute_v2 {
+	struct apr_hdr hdr;
+
+	u16 direction;
+	u16 mute_flag;
+	u16 ramp_duration_ms;
+} __packed;
 
 #define VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA	0x00011374
 #define VSS_IVOCPROC_CMD_DEREGISTER_VOL_CALIBRATION_DATA	0x00011375
@@ -344,6 +356,29 @@ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step, u16 ramp_ms)
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_rx_volume);
+
+/*
+ * Mute state of the device, as opposed to the stream. The two are separate
+ * gates on the same audio and both have to be open, so the vendor clears this
+ * one on both directions at the start of every call rather than trusting
+ * whatever the ADSP came up in. A vocproc left muted here accepts the whole
+ * setup, runs, exchanges packets with the modem, and is silent both ways.
+ */
+int q6cvp_set_device_mute(struct q6voice_session *cvp, u16 direction, bool mute,
+			  u16 ramp_ms)
+{
+	struct vss_ivolume_cmd_mute_v2 cmd = {0};
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_IVOLUME_CMD_MUTE_V2;
+
+	cmd.direction = direction;
+	cmd.mute_flag = mute ? VSS_IVOLUME_MUTE_ON : VSS_IVOLUME_MUTE_OFF;
+	cmd.ramp_duration_ms = ramp_ms;
+
+	return q6voice_common_send(cvp, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvp_set_device_mute);
 
 /*
  * Point the vocproc at a volume calibration table already lent to the ADSP.

@@ -247,13 +247,13 @@ static int q6voice_cal_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "no 32-bit DMA\n");
 
 	/*
-	 * Without the pool this device has nothing to allocate from that the
-	 * ADSP is known to reach, so fail rather than fall back to ordinary
-	 * pages: getting that wrong takes the board down with it.
+	 * A reserved pool if the board gives us one, otherwise allocate against
+	 * this device's IOMMU domain -- the audio domain, which the DSP reads
+	 * from for ordinary playback, so it can reach this too.
 	 */
 	ret = of_reserved_mem_device_init(dev);
-	if (ret)
-		return dev_err_probe(dev, ret, "no calibration memory pool\n");
+	if (ret && ret != -ENODEV)
+		return dev_err_probe(dev, ret, "bad calibration memory pool\n");
 
 	q6voice_cal_dev = dev;
 	return 0;

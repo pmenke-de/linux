@@ -292,6 +292,21 @@ configured:
 	if (ret)
 		dev_warn(dev, "failed to unmute tx stream: %d\n", ret);
 
+	/*
+	 * The device mute is a second gate, on the vocproc rather than the
+	 * stream, and it applies to both directions. Unlike the stream mute the
+	 * vendor clears it for uplink and downlink both.
+	 */
+	ret = q6cvp_set_device_mute(cvp, VSS_IVOLUME_DIRECTION_RX, false,
+				    Q6VOICE_MUTE_RAMP_MS);
+	if (ret)
+		dev_warn(dev, "failed to unmute rx device: %d\n", ret);
+
+	ret = q6cvp_set_device_mute(cvp, VSS_IVOLUME_DIRECTION_TX, false,
+				    Q6VOICE_MUTE_RAMP_MS);
+	if (ret)
+		dev_warn(dev, "failed to unmute tx device: %d\n", ret);
+
 started:
 	ret = q6mvm_start(mvm, true);
 	if (ret) {
