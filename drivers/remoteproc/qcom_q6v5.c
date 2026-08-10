@@ -166,13 +166,13 @@ static irqreturn_t q6v5_handover_interrupt(int irq, void *data)
 
 	if (q6v5->handover_issued) {
 		/*
-		 * SLPI on SM8250 re-asserts the handover SMP2P bit many times
-		 * after the first handover, which floods the log with hundreds
-		 * of these. The check above already makes that harmless, so
-		 * only complain occasionally.
+		 * Some remotes on SM8250 re-assert the handover bit steadily
+		 * for as long as they are up, hundreds of times a minute. The
+		 * check above already makes that harmless, and a message for
+		 * something both expected and inconsequential is worse than no
+		 * message: it drowns the log it appears in.
 		 */
-		dev_err_ratelimited(q6v5->dev,
-				    "Handover signaled, but it already happened\n");
+		dev_dbg(q6v5->dev, "handover signaled again, ignoring\n");
 		return IRQ_HANDLED;
 	}
 

@@ -30,6 +30,7 @@
  * See tools/remoteproc/acdb_voice_cal.py for where it comes from.
  */
 
+#include <linux/unaligned.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/firmware.h>
@@ -121,6 +122,53 @@ EXPORT_SYMBOL_GPL(q6voice_cal_free);
  * there is none installed, which is not an error: calls still work, they are
  * just stuck at whatever volume the vocproc defaults to.
  */
+/*
+ * A column is stored in the file the way it sits in the calibration database:
+ * an id, a type, and a 32-bit value. The DSP's descriptor gives every value
+ * eight bytes regardless of how wide it really is, so the columns have to be
+ * widened on the way in. Handed over as they sit, each column is read starting
+ * four bytes into the one before it, and the DSP rejects the lot.
+ */
+#define Q6VOICE_CAL_FILE_COLUMN		12
+#define Q6VOICE_CAL_DSP_COLUMN		16
+
+static void *q6voice_cal_columns(struct device *dev, const void *src,
+				 u32 src_size, u32 *dsp_size)
+{
+	u32 columns, size, i;
+	u8 *out;
+
+	if (src_size < sizeof(__le32))
+		return NULL;
+
+	columns = get_unaligned_le32(src);
+	if (src_size != sizeof(__le32) + columns * Q6VOICE_CAL_FILE_COLUMN) {
+		dev_err(dev, "%u columns do not fit %u bytes of them\
+",
+			columns, src_size);
+		return NULL;
+	}
+
+	size = sizeof(__le32) + columns * Q6VOICE_CAL_DSP_COLUMN;
+	out = kzalloc(size, GFP_KERNEL);
+	if (!out)
+		return NULL;
+
+	/* The count, then each column against a value field twice as wide. */
+	memcpy(out, src, sizeof(__le32));
+
+	for (i = 0; i < columns; i++) {
+		const u8 *from = src + sizeof(__le32) + i * Q6VOICE_CAL_FILE_COLUMN;
+		u8 *to = out + sizeof(__le32) + i * Q6VOICE_CAL_DSP_COLUMN;
+
+		memcpy(to, from, 8);		/* id and type */
+		memcpy(to + 8, from + 8, 4);	/* value, zero extended */
+	}
+
+	*dsp_size = size;
+	return out;
+}
+
 struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 				     struct q6voice_session *mvm)
 {
@@ -169,10 +217,10 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 		goto err_release;
 
 	cal->dev = dev;
-	cal->col_size = col_size;
 	cal->data_size = data_size;
 
-	cal->col_info = kmemdup(fw->data + sizeof(*hdr), col_size, GFP_KERNEL);
+	cal->col_info = q6voice_cal_columns(dev, fw->data + sizeof(*hdr),
+					    col_size, &cal->col_size);
 	if (!cal->col_info)
 		goto err_free;
 
