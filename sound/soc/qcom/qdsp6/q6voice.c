@@ -116,7 +116,9 @@ static void q6voice_modem_link_end(void)
  *   0  everything (default)
  *   1  no vocproc configuration: no channel info, media format, topology or
  *      volume, but still a stream session
- *   2  as msm8916 does it: no stream session either
+ *   2  as msm8916 does it: no stream session either -- this ADSP refuses to
+ *      enable a vocproc without one (VSS_IVOCPROC_CMD_ENABLE returns an
+ *      error), so it is a comparison point rather than a usable setting
  *
  * Writable at runtime, so the three can be compared within one boot rather than
  * one reboot each.
@@ -306,7 +308,9 @@ attach_err:
 cvp_err:
 	q6cvp_enable(cvp, false);
 stream_err:
-	q6mvm_attach_stream(mvm, cvs, false);
+	/* There is no stream to detach when the setup level left it out. */
+	if (cvs)
+		q6mvm_attach_stream(mvm, cvs, false);
 link_err:
 	q6voice_modem_link_end();
 	return ret;
