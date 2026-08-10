@@ -40,6 +40,21 @@ struct q6voice_service {
 static DEFINE_SPINLOCK(q6voice_services_lock);
 static struct q6voice_service *q6voice_services[Q6VOICE_SERVICE_COUNT] = {0};
 
+/*
+ * The ADSP can restart under us -- it has its own watchdog, and userspace can
+ * ask for it. Its APR services disappear and come back when that happens, and
+ * anything the ADSP was told before is gone with them: it comes back knowing
+ * nothing about, say, where the voice mailbox lives. Drivers that configured
+ * something once at probe need to hear about it so they can say it again.
+ */
+static void (*q6voice_svc_notifier)(enum q6voice_service_type type);
+
+void q6voice_common_set_svc_notifier(void (*notify)(enum q6voice_service_type))
+{
+	q6voice_svc_notifier = notify;
+}
+EXPORT_SYMBOL_GPL(q6voice_common_set_svc_notifier);
+
 int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type)
 {
 	struct device *dev = &adev->dev;
@@ -67,7 +82,14 @@ int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type
 		q6voice_services[type] = svc;
 	spin_unlock_irqrestore(&q6voice_services_lock, flags);
 
-	return current_svc ? -EEXIST : 0;
+	if (current_svc)
+		return -EEXIST;
+
+	/* Announce it only once it can actually be sent to. */
+	if (q6voice_svc_notifier)
+		q6voice_svc_notifier(type);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(q6voice_common_probe);
 

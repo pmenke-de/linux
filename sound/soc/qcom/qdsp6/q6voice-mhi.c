@@ -54,6 +54,9 @@ struct q6voice_mhi {
 
 	unsigned int votes;
 	struct mutex lock;
+
+	/* re-announces the mailbox after the ADSP restarts */
+	struct work_struct reconfig;
 };
 
 /*
@@ -172,6 +175,52 @@ static void q6voice_mhi_unmap_pcie(struct q6voice_mhi *ctx)
 	ctx->pcie_dev = NULL;
 }
 
+/*
+ * Tell the ADSP where the mailbox is. Split out because it has to be said
+ * again every time the ADSP restarts: it comes back knowing nothing, and a
+ * mailbox it has not been told about is one it will never read.
+ */
+static int q6voice_mhi_configure(struct q6voice_mhi *ctx)
+{
+	int ret;
+
+	ret = q6mvm_set_mailbox_memory(ctx->iova_adsp, ctx->iova_pcie,
+				       VOICE_MAILBOX_SIZE);
+	if (ret) {
+		dev_err(ctx->adsp_dev, "failed to configure mailbox: %d\n", ret);
+		return ret;
+	}
+
+	dev_info(ctx->adsp_dev, "voice mailbox configured\n");
+	return 0;
+}
+
+static void q6voice_mhi_reconfig_work(struct work_struct *work)
+{
+	struct q6voice_mhi *ctx = container_of(work, struct q6voice_mhi,
+					       reconfig);
+
+	mutex_lock(&ctx->lock);
+	/* Nothing to announce until the modem has been mapped in. */
+	if (ctx->iova_pcie)
+		q6voice_mhi_configure(ctx);
+	mutex_unlock(&ctx->lock);
+}
+
+/*
+ * The ADSP announces itself here, including after a restart. Anything it was
+ * told before that is gone, so it has to be told again -- but not from here:
+ * this runs while the service is still probing, and saying it involves waiting
+ * for the ADSP to answer.
+ */
+static void q6voice_mhi_svc_up(enum q6voice_service_type type)
+{
+	struct q6voice_mhi *ctx = q6voice_mhi_ctx;
+
+	if (type == Q6VOICE_SERVICE_MVM && ctx)
+		schedule_work(&ctx->reconfig);
+}
+
 static int q6voice_mhi_map_and_configure(struct q6voice_mhi *ctx,
 					 struct device *pcie_dev)
 {
@@ -193,15 +242,12 @@ static int q6voice_mhi_map_and_configure(struct q6voice_mhi *ctx,
 		&ctx->phys, &ctx->iova_adsp, &ctx->iova_pcie,
 		VOICE_MAILBOX_SIZE);
 
-	ret = q6mvm_set_mailbox_memory(ctx->iova_adsp, ctx->iova_pcie,
-				       VOICE_MAILBOX_SIZE);
+	ret = q6voice_mhi_configure(ctx);
 	if (ret) {
-		dev_err(ctx->adsp_dev, "failed to configure mailbox: %d\n", ret);
 		q6voice_mhi_unmap_pcie(ctx);
 		return ret;
 	}
 
-	dev_info(ctx->adsp_dev, "voice mailbox configured\n");
 	return 0;
 }
 
@@ -292,6 +338,7 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mutex_init(&ctx->lock);
+	INIT_WORK(&ctx->reconfig, q6voice_mhi_reconfig_work);
 	ctx->adsp_dev = dev;
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
@@ -326,6 +373,7 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 			    &q6voice_mhi_mailbox_fops);
 
 	q6voice_set_modem_link(&q6voice_mhi_link);
+	q6voice_common_set_svc_notifier(q6voice_mhi_svc_up);
 
 	/*
 	 * Register last: the modem may already be up, in which case this
@@ -340,6 +388,7 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 	return 0;
 
 err_unregister:
+	q6voice_common_set_svc_notifier(NULL);
 	q6voice_set_modem_link(NULL);
 	debugfs_remove_recursive(ctx->debugfs);
 	q6voice_mhi_ctx = NULL;
@@ -356,7 +405,9 @@ static void q6voice_mhi_remove(struct platform_device *pdev)
 
 	debugfs_remove_recursive(ctx->debugfs);
 
+	q6voice_common_set_svc_notifier(NULL);
 	q6voice_set_modem_link(NULL);
+	cancel_work_sync(&ctx->reconfig);
 	mhi_driver_unregister(&q6voice_mhi_driver);
 
 	mutex_lock(&ctx->lock);

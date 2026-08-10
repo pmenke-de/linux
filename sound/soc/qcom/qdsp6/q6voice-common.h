@@ -80,6 +80,12 @@ struct q6voice_modem_link {
 
 void q6voice_set_modem_link(const struct q6voice_modem_link *link);
 
+/*
+ * Called each time a service becomes usable, including after an ADSP restart,
+ * from a context that may send to it.
+ */
+void q6voice_common_set_svc_notifier(void (*notify)(enum q6voice_service_type));
+
 int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type);
 void q6voice_common_remove(struct apr_device *adev);
 
