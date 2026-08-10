@@ -46,7 +46,8 @@ struct q6voice_cal {
 
 	void *data;		/* the calibration blocks themselves */
 	phys_addr_t data_phys;
-	u32 data_size;
+	u32 data_size;		/* what the calibration actually occupies */
+	u32 block_size;		/* what was lent: page aligned, as required */
 
 	void *col_info;
 	u32 col_size;
@@ -83,7 +84,7 @@ void q6voice_cal_free(struct q6voice_cal *cal)
 	if (cal->table)
 		free_pages_exact(cal->table, PAGE_SIZE);
 	if (cal->data)
-		free_pages_exact(cal->data, cal->data_size);
+		free_pages_exact(cal->data, cal->block_size);
 	kfree(cal->col_info);
 	kfree(cal);
 }
@@ -141,10 +142,15 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
 
 	/*
 	 * The ADSP reads both of these by physical address, so they must be
-	 * physically contiguous -- no vmalloc -- and page aligned, which is the
-	 * alignment the mapping command declares.
+	 * physically contiguous -- no vmalloc.
+	 *
+	 * The block lent to the ADSP must also be a whole number of the pages
+	 * the mapping command declares, so round it up and zero the remainder:
+	 * handing over a block shorter than that has the ADSP reading past the
+	 * calibration into whatever happens to follow it.
 	 */
-	cal->data = alloc_pages_exact(data_size, GFP_KERNEL);
+	cal->block_size = PAGE_ALIGN(data_size);
+	cal->data = alloc_pages_exact(cal->block_size, GFP_KERNEL | __GFP_ZERO);
 	if (!cal->data)
 		goto err_free;
 
@@ -160,7 +166,7 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
 
 	table = cal->table;
 	table->block_addr = cpu_to_le64(cal->data_phys);
-	table->block_size = cpu_to_le32(data_size);
+	table->block_size = cpu_to_le32(cal->block_size);
 
 	ret = q6mvm_map_memory(cal->table_phys, sizeof(*table),
 			       &cal->mem_handle);
@@ -170,8 +176,8 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
 		goto err_free;
 	}
 
-	dev_info(dev, "calibration %s: %u bytes, handle %#x\n",
-		 name, data_size, cal->mem_handle);
+	dev_info(dev, "calibration %s: %u bytes in a %u byte block, handle %#x\n",
+		 name, data_size, cal->block_size, cal->mem_handle);
 
 	release_firmware(fw);
 	return cal;
