@@ -37,18 +37,46 @@ FAMILIES = {
 }
 
 # How the calibration table is indexed. The ADSP needs this to turn a volume
-# step into a row, and it does not come from the file: the vendor library
-# carries it as constants, so it is reproduced here. The volume table is keyed
-# by one column more than the plain vocproc table -- the step itself, which is
-# the column with no "not applicable" value.
+# step into a row, and it does not come from the calibration file: the vendor
+# library carries it as static data. These are that data, read out of
+# libaudcal.so rather than reproduced by hand -- it keeps four descriptions and
+# hands out whichever matches the table being registered.
+#
+# Two things vary. A volume table is keyed by one column more than a plain
+# vocproc table -- the step itself, 0x11358 -- and an instance table by four
+# more, which carry the module instance ids. Describing an instance table with
+# the plain columns is not ignored: the ADSP rejects the registration outright,
+# which looks like bad calibration data when the data is fine.
+#
+# The tables this script reads are the instance variants, so "volume" below is
+# the eight column description.
 COLUMNS = {
-    "static": [(0x00011350, 0x0001135C, 0x0001135E),
-               (0x00011352, 0x0001135C, 0x00000000),
-               (0x00011351, 0x0001135C, 0x00000000)],
-    "dynamic": [(0x00011350, 0x0001135C, 0x0001135E),
+    # plain vocproc, 40 bytes
+    "vocproc": [(0x00011350, 0x0001135C, 0x0001135E),
                 (0x00011352, 0x0001135C, 0x00000000),
-                (0x00011351, 0x0001135C, 0x00000000),
-                (0x00011358, 0x0001135C, 0xFFFFFFFF)],
+                (0x00011351, 0x0001135C, 0x00000000)],
+    # plain volume, 52 bytes
+    "volume_plain": [(0x00011350, 0x0001135C, 0x0001135E),
+                     (0x00011352, 0x0001135C, 0x00000000),
+                     (0x00011351, 0x0001135C, 0x00000000),
+                     (0x00011358, 0x0001135C, 0xFFFFFFFF)],
+    # vocproc with instance ids, 88 bytes
+    "vocproc_inst": [(0x00011350, 0x0001135C, 0x0001135E),
+                     (0x00011352, 0x0001135C, 0x00000000),
+                     (0x00011351, 0x0001135C, 0x00000000),
+                     (0x00013082, 0x0001135C, 0x00013085),
+                     (0x00013083, 0x0001135C, 0x00013085),
+                     (0x00013081, 0x0001135C, 0x00010FC0),
+                     (0x00013084, 0x0001135C, 0x0001308A)],
+    # volume with instance ids, 100 bytes -- what the tables here need
+    "volume": [(0x00011350, 0x0001135C, 0x0001135E),
+               (0x00011352, 0x0001135C, 0x00000000),
+               (0x00011351, 0x0001135C, 0x00000000),
+               (0x00011358, 0x0001135C, 0xFFFFFFFF),
+               (0x00013082, 0x0001135C, 0x00013085),
+               (0x00013083, 0x0001135C, 0x00013085),
+               (0x00013081, 0x0001135C, 0x00010FC0),
+               (0x00013084, 0x0001135C, 0x0001308A)],
 }
 
 
@@ -176,7 +204,7 @@ def main():
             with open(args.col_info, "rb") as f:
                 col = f.read()
         else:
-            col = column_info(args.family)
+            col = column_info("volume")
 
         with open(args.output, "wb") as f:
             if args.raw:
