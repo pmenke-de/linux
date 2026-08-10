@@ -123,49 +123,34 @@ EXPORT_SYMBOL_GPL(q6voice_cal_free);
  * just stuck at whatever volume the vocproc defaults to.
  */
 /*
- * A column is stored in the file the way it sits in the calibration database:
- * an id, a type, and a 32-bit value. The DSP's descriptor gives every value
- * eight bytes regardless of how wide it really is, so the columns have to be
- * widened on the way in. Handed over as they sit, each column is read starting
- * four bytes into the one before it, and the DSP rejects the lot.
+ * A column is an id, a type and a value: twelve bytes of them. That is the
+ * width the calibration library itself uses -- every column description it
+ * hands out is a four byte count and a whole number of twelve -- so they cross
+ * to the DSP exactly as they are stored, and only the count is worth checking.
  */
-#define Q6VOICE_CAL_FILE_COLUMN		12
-#define Q6VOICE_CAL_DSP_COLUMN		16
+#define Q6VOICE_CAL_COLUMN		12
 
 static void *q6voice_cal_columns(struct device *dev, const void *src,
-				 u32 src_size, u32 *dsp_size)
+				 u32 src_size, u32 *col_size)
 {
-	u32 columns, size, i;
-	u8 *out;
+	u32 columns;
+	void *out;
 
 	if (src_size < sizeof(__le32))
 		return NULL;
 
 	columns = get_unaligned_le32(src);
-	if (src_size != sizeof(__le32) + columns * Q6VOICE_CAL_FILE_COLUMN) {
-		dev_err(dev, "%u columns do not fit %u bytes of them\
-",
+	if (src_size != sizeof(__le32) + columns * Q6VOICE_CAL_COLUMN) {
+		dev_err(dev, "%u columns do not fit in %u bytes of them\n",
 			columns, src_size);
 		return NULL;
 	}
 
-	size = sizeof(__le32) + columns * Q6VOICE_CAL_DSP_COLUMN;
-	out = kzalloc(size, GFP_KERNEL);
+	out = kmemdup(src, src_size, GFP_KERNEL);
 	if (!out)
 		return NULL;
 
-	/* The count, then each column against a value field twice as wide. */
-	memcpy(out, src, sizeof(__le32));
-
-	for (i = 0; i < columns; i++) {
-		const u8 *from = src + sizeof(__le32) + i * Q6VOICE_CAL_FILE_COLUMN;
-		u8 *to = out + sizeof(__le32) + i * Q6VOICE_CAL_DSP_COLUMN;
-
-		memcpy(to, from, 8);		/* id and type */
-		memcpy(to + 8, from + 8, 4);	/* value, zero extended */
-	}
-
-	*dsp_size = size;
+	*col_size = src_size;
 	return out;
 }
 
