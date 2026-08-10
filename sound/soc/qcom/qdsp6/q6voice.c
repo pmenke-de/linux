@@ -102,13 +102,37 @@ static void q6voice_modem_link_end(void)
 		q6voice_modem_link->end();
 }
 
+/*
+ * How much of the vocproc to configure before starting a call.
+ *
+ * The msm8916 driver this one grew from creates a vocproc, enables it, attaches
+ * it and starts -- five commands, and calls are audible. Everything beyond that
+ * here was added for a modem on another chip, at a time when the session name
+ * and the create opcode were both still wrong, and has never been re-tested
+ * since those were fixed. A configuration command the ADSP accepts but does not
+ * want is indistinguishable from one it needs, so make it possible to take them
+ * back out and hear the difference.
+ *
+ *   0  everything (default)
+ *   1  no vocproc configuration: no channel info, media format, topology or
+ *      volume, but still a stream session
+ *   2  as msm8916 does it: no stream session either
+ *
+ * Writable at runtime, so the three can be compared within one boot rather than
+ * one reboot each.
+ */
+static int setup_level;
+module_param(setup_level, int, 0644);
+MODULE_PARM_DESC(setup_level,
+		 "0 = full setup, 1 = skip vocproc config, 2 = msm8916 minimal");
+
 static int q6voice_path_start(struct q6voice_path *p)
 {
 	struct device *dev = p->v->dev;
-	struct q6voice_session *mvm, *cvp, *cvs;
+	struct q6voice_session *mvm, *cvp, *cvs = NULL;
 	int ret;
 
-	dev_dbg(dev, "start path %d\n", p->type);
+	dev_info(dev, "start path %d, setup level %d\n", p->type, setup_level);
 
 	/*
 	 * Where the modem is a separate chip it DMAs the call audio into system
@@ -134,24 +158,26 @@ static int q6voice_path_start(struct q6voice_path *p)
 	}
 
 	/*
-	 * The stream session carries the voice packets themselves. It has to
-	 * exist and be attached before the vocproc is started, otherwise the
-	 * ADSP ends up with a fully configured but silent call.
+	 * The stream session carries the voice packets themselves. msm8916 does
+	 * without one -- its modem is on the same die -- so it is the first
+	 * thing to drop when reproducing that driver exactly.
 	 */
-	cvs = p->runtime->sessions[Q6VOICE_SERVICE_CVS];
-	if (!cvs) {
-		cvs = q6cvs_session_create(p->type);
-		if (IS_ERR(cvs)) {
-			ret = PTR_ERR(cvs);
+	if (setup_level < 2) {
+		cvs = p->runtime->sessions[Q6VOICE_SERVICE_CVS];
+		if (!cvs) {
+			cvs = q6cvs_session_create(p->type);
+			if (IS_ERR(cvs)) {
+				ret = PTR_ERR(cvs);
+				goto link_err;
+			}
+			p->runtime->sessions[Q6VOICE_SERVICE_CVS] = cvs;
+		}
+
+		ret = q6mvm_attach_stream(mvm, cvs, true);
+		if (ret) {
+			dev_err(dev, "failed to attach stream to mvm: %d\n", ret);
 			goto link_err;
 		}
-		p->runtime->sessions[Q6VOICE_SERVICE_CVS] = cvs;
-	}
-
-	ret = q6mvm_attach_stream(mvm, cvs, true);
-	if (ret) {
-		dev_err(dev, "failed to attach stream to mvm: %d\n", ret);
-		goto link_err;
 	}
 
 	/*
@@ -175,6 +201,9 @@ static int q6voice_path_start(struct q6voice_path *p)
 		}
 		p->runtime->sessions[Q6VOICE_SERVICE_CVP] = cvp;
 	}
+
+	if (setup_level > 0)
+		goto configured;
 
 	/*
 	 * Describe both directions before committing: the ADSP refuses the
@@ -215,6 +244,7 @@ static int q6voice_path_start(struct q6voice_path *p)
 	if (ret)
 		dev_warn(dev, "topology commit failed: %d\n", ret);
 
+configured:
 	ret = q6cvp_enable(cvp, true);
 	if (ret) {
 		dev_err(dev, "failed to enable cvp: %d\n", ret);
@@ -226,6 +256,9 @@ static int q6voice_path_start(struct q6voice_path *p)
 		dev_err(dev, "failed to attach cvp to mvm: %d\n", ret);
 		goto attach_err;
 	}
+
+	if (setup_level > 0)
+		goto started;
 
 	/*
 	 * The volume step below is resolved through a calibration table, so
@@ -257,6 +290,7 @@ static int q6voice_path_start(struct q6voice_path *p)
 	if (ret)
 		dev_warn(dev, "failed to unmute tx stream: %d\n", ret);
 
+started:
 	ret = q6mvm_start(mvm, true);
 	if (ret) {
 		dev_err(dev, "failed to start voice: %d\n", ret);
