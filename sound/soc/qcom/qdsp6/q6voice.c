@@ -123,6 +123,24 @@ static void q6voice_modem_link_end(void)
  * Writable at runtime, so the three can be compared within one boot rather than
  * one reboot each.
  */
+/*
+ * How far to take the calibration handoff. Lending the memory and registering
+ * it are separate conversations with the DSP and either can be the one that
+ * kills it, so they can be reached one at a time: whichever level first takes
+ * the board down is the one at fault. Off by default because a board that
+ * resets on every call is worse than one that is merely quiet.
+ */
+enum {
+	Q6VOICE_CAL_NONE = 0,	/* do not touch calibration at all */
+	Q6VOICE_CAL_LEND,	/* load it and lend the DSP the memory */
+	Q6VOICE_CAL_REGISTER,	/* also point the vocproc at it */
+};
+
+static int cal_level = Q6VOICE_CAL_NONE;
+module_param(cal_level, int, 0644);
+MODULE_PARM_DESC(cal_level,
+		 "0 to leave calibration alone, 1 to lend the DSP the memory, 2 to also register it.");
+
 static int setup_level;
 module_param(setup_level, int, 0644);
 MODULE_PARM_DESC(setup_level,
@@ -267,15 +285,18 @@ configured:
 	 * the table has to reach the ADSP first. Absent calibration is not an
 	 * error -- the call proceeds, and only the volume command notices.
 	 */
-	if (!p->v->cal_tried) {
+	if (cal_level >= Q6VOICE_CAL_LEND && !p->v->cal_tried) {
 		p->v->cal_tried = true;
 		p->v->cal = q6voice_cal_load(dev, Q6VOICE_CAL_FIRMWARE, mvm);
 	}
 
-	ret = q6voice_cal_register_vol(p->v->cal, cvp);
-	if (ret)
-		dev_warn(dev, "failed to register volume calibration: %d\n",
-			 ret);
+	if (cal_level >= Q6VOICE_CAL_REGISTER) {
+		dev_info(dev, "registering volume calibration\n");
+		ret = q6voice_cal_register_vol(p->v->cal, cvp);
+		if (ret)
+			dev_warn(dev, "failed to register volume calibration: %d\n",
+				 ret);
+	}
 
 	/*
 	 * Volume and mute, before the call runs and in that order, as the
