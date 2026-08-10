@@ -24,6 +24,7 @@
  */
 
 #include <linux/async.h>
+#include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
 #include <linux/mhi.h>
@@ -32,6 +33,8 @@
 #include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/rpmsg.h>
+#include <linux/sched/clock.h>
+#include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 
@@ -174,6 +177,16 @@ enum mhi_sat_state {
 	SAT_FATAL_DETECT,	/* device asserted */
 	SAT_ERROR,		/* device down after error or shutdown */
 	SAT_DISABLED,		/* wait for device removal */
+	SAT_STATE_MAX,
+};
+
+static const char * const sat_state_str[SAT_STATE_MAX] = {
+	[SAT_READY]		= "ready",
+	[SAT_RUNNING]		= "running",
+	[SAT_DISCONNECTED]	= "disconnected",
+	[SAT_FATAL_DETECT]	= "fatal detected",
+	[SAT_ERROR]		= "error",
+	[SAT_DISABLED]		= "disabled",
 };
 
 #define MHI_SAT_ACTIVE(c)	((c)->state == SAT_RUNNING)
@@ -182,6 +195,26 @@ enum mhi_sat_state {
 				 (c)->state == SAT_DISCONNECTED)
 #define MHI_SAT_ALLOW_SYS_ERR(c) ((c)->state == SAT_RUNNING || \
 				  (c)->state == SAT_FATAL_DETECT)
+
+/*
+ * Everything the remote asked for this boot, and what it was told in reply.
+ *
+ * The exchange happens once, early, and is over before anyone can arm dynamic
+ * debug -- and a request the host refuses is answered with an error code the
+ * remote accepts without complaint, so a rejected channel and a granted one
+ * look the same from the outside. Recording it is the only way to tell.
+ */
+#define MHI_SAT_LOG_ENTRIES	64
+
+struct mhi_sat_log_entry {
+	u64 ts;
+	u64 ptr;
+	u32 size;
+	u8 type;
+	u8 ccs;
+	u8 id;
+	bool er;	/* the id names an event ring, not a channel */
+};
 
 struct mhi_sat_subsys {
 	const char *name;
@@ -225,6 +258,16 @@ struct mhi_sat_cntrl {
 	enum mhi_ev_ccs last_cmd_ccs;
 	struct completion completion;
 	struct mutex cmd_wait_mutex;
+
+	/* diagnostics; see mhi_sat_status_show() and mhi_sat_log_show() */
+	struct dentry *dbgfs;
+	unsigned int hellos;
+	unsigned int rx_cmds;
+	unsigned int rx_evts;
+
+	struct mhi_sat_log_entry log[MHI_SAT_LOG_ENTRIES];
+	unsigned int log_next;
+	spinlock_t log_lock;
 };
 
 struct mhi_sat_device {
@@ -328,8 +371,6 @@ static int mhi_sat_wait_cmd_completion(struct mhi_sat_cntrl *sat_cntrl)
 	struct device *dev = sat_cntrl->mhi_cntrl->cntrl_dev;
 	int ret;
 
-	reinit_completion(&sat_cntrl->completion);
-
 	ret = wait_for_completion_timeout(&sat_cntrl->completion,
 			msecs_to_jiffies(sat_cntrl->mhi_cntrl->timeout_ms));
 	if (!ret || sat_cntrl->last_cmd_ccs != MHI_EV_CC_SUCCESS) {
@@ -369,6 +410,28 @@ static int mhi_sat_send_msg(struct mhi_sat_cntrl *sat_cntrl,
 	return rpmsg_send(subsys->rpdev->ept, msg, msg_size);
 }
 
+static void mhi_sat_log(struct mhi_sat_cntrl *sat_cntrl, u8 type, u8 id,
+			bool er, u64 ptr, u32 size, u8 ccs)
+{
+	struct mhi_sat_log_entry *e;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sat_cntrl->log_lock, flags);
+
+	e = &sat_cntrl->log[sat_cntrl->log_next % MHI_SAT_LOG_ENTRIES];
+	sat_cntrl->log_next++;
+
+	e->ts = local_clock();
+	e->ptr = ptr;
+	e->size = size;
+	e->type = type;
+	e->ccs = ccs;
+	e->id = id;
+	e->er = er;
+
+	spin_unlock_irqrestore(&sat_cntrl->log_lock, flags);
+}
+
 /*
  * Execute the commands the remote cannot issue itself and rewrite each packet
  * in place into its completion event -- the caller ships the same buffer back.
@@ -384,6 +447,13 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 	for (i = 0; i < num_pkts; i++, pkt++) {
 		enum mhi_ev_ccs code = MHI_EV_CC_INVALID;
 		u64 completion_ptr = 0;
+
+		/* the packet is rewritten below, so keep what it asked for */
+		u8 log_type = MHI_TRE_GET_TYPE(pkt);
+		u8 log_id = MHI_TRE_GET_ID(pkt);
+		bool log_er = MHI_TRE_IS_ER_CTXT_TYPE(pkt);
+		u64 log_ptr = MHI_TRE_GET_PTR(pkt);
+		u32 log_size = MHI_TRE_GET_SIZE(pkt);
 
 		switch (MHI_TRE_GET_TYPE(pkt)) {
 		case MHI_PKT_TYPE_IOMMU_MAP_CMD: {
@@ -489,44 +559,64 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 			break;
 		}
 
+		mhi_sat_log(sat_cntrl, log_type, log_id, log_er, log_ptr,
+			    log_size, code);
+
 		pkt->ptr = MHI_TRE_EVT_CMD_COMPLETION_PTR(completion_ptr);
 		pkt->dword[0] = MHI_TRE_EVT_CMD_COMPLETION_D0(code);
 		pkt->dword[1] = MHI_TRE_EVT_CMD_COMPLETION_D1;
 	}
 }
 
-/* tell the remote the device is gone so it stops using the shared rings */
-static void mhi_sat_send_sys_err(struct mhi_sat_cntrl *sat_cntrl)
+/*
+ * Tell the remote the device is gone so it stops using the shared rings. This
+ * is the only message in the protocol the remote has to acknowledge; everything
+ * else we send is an event it may silently ignore.
+ *
+ * The caller holds cmd_wait_mutex and does the waiting, so that a probe can
+ * wait for the reply on its own terms.
+ */
+static int mhi_sat_send_sys_err_cmd(struct mhi_sat_cntrl *sat_cntrl)
 {
-	struct device *dev = sat_cntrl->mhi_cntrl->cntrl_dev;
 	struct sat_tre *pkt;
 	void *msg;
 	int ret;
 
-	flush_work(&sat_cntrl->connect_work);
-	flush_work(&sat_cntrl->process_work);
-
 	msg = kzalloc(SAT_MSG_SIZE(1), GFP_KERNEL);
 	if (!msg)
-		return;
+		return -ENOMEM;
 
 	pkt = SAT_TRE_OFFSET(msg);
 	pkt->ptr = MHI_TRE_CMD_SYS_ERR_PTR;
 	pkt->dword[0] = MHI_TRE_CMD_SYS_ERR_D0;
 	pkt->dword[1] = MHI_TRE_CMD_SYS_ERR_D1;
 
-	mutex_lock(&sat_cntrl->cmd_wait_mutex);
+	/* arm before sending: the reply may beat us back here */
+	reinit_completion(&sat_cntrl->completion);
 
 	ret = mhi_sat_send_msg(sat_cntrl, SAT_MSG_ID_CMD, SAT_RESERVED_SEQ_NUM,
 			       msg, SAT_MSG_SIZE(1));
 	kfree(msg);
-	if (ret) {
-		dev_err(dev, "sat: failed to send SYS_ERR\n");
-		mutex_unlock(&sat_cntrl->cmd_wait_mutex);
-		return;
-	}
 
-	mhi_sat_wait_cmd_completion(sat_cntrl);
+	return ret;
+}
+
+static void mhi_sat_send_sys_err(struct mhi_sat_cntrl *sat_cntrl)
+{
+	struct device *dev = sat_cntrl->mhi_cntrl->cntrl_dev;
+	int ret;
+
+	flush_work(&sat_cntrl->connect_work);
+	flush_work(&sat_cntrl->process_work);
+
+	mutex_lock(&sat_cntrl->cmd_wait_mutex);
+
+	ret = mhi_sat_send_sys_err_cmd(sat_cntrl);
+	if (ret)
+		dev_err(dev, "sat: failed to send SYS_ERR: %d\n", ret);
+	else
+		mhi_sat_wait_cmd_completion(sat_cntrl);
+
 	mutex_unlock(&sat_cntrl->cmd_wait_mutex);
 }
 
@@ -591,35 +681,19 @@ next:
 }
 
 /*
- * Greet the remote once the link is up and every shared channel has probed:
- * where the MHI registers live, which event rings it owns, and that the device
- * is already in M0/AMSS (the AP brought it up long before).
+ * Tell the remote where the MHI registers live, which event rings it owns, and
+ * that the device is already in M0/AMSS (the AP brought it up long before).
+ * The remote is not expected to answer, only to start asking for its channels.
  */
-static void mhi_sat_connect_worker(struct work_struct *work)
+static int mhi_sat_send_hello(struct mhi_sat_cntrl *sat_cntrl)
 {
-	struct mhi_sat_cntrl *sat_cntrl = container_of(work,
-					struct mhi_sat_cntrl, connect_work);
-	struct device *dev = sat_cntrl->mhi_cntrl->cntrl_dev;
-	struct mhi_sat_subsys *subsys = sat_cntrl->subsys;
-	enum mhi_sat_state prev_state;
 	struct sat_tre *pkt;
 	void *msg;
 	int ret;
 
-	spin_lock_irq(&sat_cntrl->state_lock);
-	if (!subsys->rpdev ||
-	    sat_cntrl->max_devices != sat_cntrl->num_devices ||
-	    !MHI_SAT_ALLOW_CONN(sat_cntrl)) {
-		spin_unlock_irq(&sat_cntrl->state_lock);
-		return;
-	}
-	prev_state = sat_cntrl->state;
-	sat_cntrl->state = SAT_RUNNING;
-	spin_unlock_irq(&sat_cntrl->state_lock);
-
 	msg = kzalloc(SAT_MSG_SIZE(3), GFP_KERNEL);
 	if (!msg)
-		goto err;
+		return -ENOMEM;
 
 	pkt = SAT_TRE_OFFSET(msg);
 
@@ -641,6 +715,35 @@ static void mhi_sat_connect_worker(struct work_struct *work)
 	ret = mhi_sat_send_msg(sat_cntrl, SAT_MSG_ID_EVT, SAT_RESERVED_SEQ_NUM,
 			       msg, SAT_MSG_SIZE(3));
 	kfree(msg);
+
+	if (!ret)
+		sat_cntrl->hellos++;
+
+	return ret;
+}
+
+/* Greet the remote once the link is up and every shared channel has probed. */
+static void mhi_sat_connect_worker(struct work_struct *work)
+{
+	struct mhi_sat_cntrl *sat_cntrl = container_of(work,
+					struct mhi_sat_cntrl, connect_work);
+	struct device *dev = sat_cntrl->mhi_cntrl->cntrl_dev;
+	struct mhi_sat_subsys *subsys = sat_cntrl->subsys;
+	enum mhi_sat_state prev_state;
+	int ret;
+
+	spin_lock_irq(&sat_cntrl->state_lock);
+	if (!subsys->rpdev ||
+	    sat_cntrl->max_devices != sat_cntrl->num_devices ||
+	    !MHI_SAT_ALLOW_CONN(sat_cntrl)) {
+		spin_unlock_irq(&sat_cntrl->state_lock);
+		return;
+	}
+	prev_state = sat_cntrl->state;
+	sat_cntrl->state = SAT_RUNNING;
+	spin_unlock_irq(&sat_cntrl->state_lock);
+
+	ret = mhi_sat_send_hello(sat_cntrl);
 	if (ret) {
 		dev_err(dev, "sat: failed to send hello: %d\n", ret);
 		goto err;
@@ -656,6 +759,198 @@ err:
 	if (MHI_SAT_ACTIVE(sat_cntrl))
 		sat_cntrl->state = prev_state;
 	spin_unlock_irq(&sat_cntrl->state_lock);
+}
+
+static struct dentry *mhi_sat_debugfs_root;
+
+/*
+ * Everything the host knows about one satellite link, so a silent remote can be
+ * told apart from a link that was never offered anything: whether the rpmsg
+ * channel exists, whether all the lent channels probed (the hello is only sent
+ * once they have), what the hello claimed, and how much has been said in each
+ * direction since.
+ */
+static int mhi_sat_status_show(struct seq_file *s, void *unused)
+{
+	struct mhi_sat_cntrl *sat_cntrl = s->private;
+	enum mhi_sat_state state = sat_cntrl->state;
+
+	seq_printf(s, "subsys:     %s\n", sat_cntrl->subsys->name);
+	seq_printf(s, "link:       %s\n",
+		   sat_cntrl->subsys->rpdev ? "up" : "down");
+	seq_printf(s, "state:      %s\n",
+		   state < SAT_STATE_MAX ? sat_state_str[state] : "invalid");
+	seq_printf(s, "dev id:     0x%08x\n", sat_cntrl->dev_id);
+	seq_printf(s, "mmio base:  %pap\n", &sat_cntrl->base_addr);
+	seq_printf(s, "devices:    %d of %d\n", sat_cntrl->num_devices,
+		   sat_cntrl->max_devices);
+	seq_printf(s, "event ring: %d..%d (%d)\n", sat_cntrl->er_base,
+		   sat_cntrl->er_max, sat_cntrl->num_er);
+	seq_printf(s, "tx:         %u messages, %u hellos, last cmd seq %u\n",
+		   sat_cntrl->seq, sat_cntrl->hellos, sat_cntrl->last_cmd_seq);
+	seq_printf(s, "rx:         %u commands, %u events\n",
+		   sat_cntrl->rx_cmds, sat_cntrl->rx_evts);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mhi_sat_status);
+
+static const char *mhi_sat_cmd_str(u8 type)
+{
+	switch (type) {
+	case MHI_PKT_TYPE_IOMMU_MAP_CMD:
+		return "IOMMU_MAP";
+	case MHI_PKT_TYPE_CTXT_UPDATE_CMD:
+		return "CTXT_UPDATE";
+	case MHI_PKT_TYPE_START_CHAN_CMD:
+		return "START_CHAN";
+	case MHI_PKT_TYPE_RESET_CHAN_CMD:
+		return "RESET_CHAN";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+static int mhi_sat_log_show(struct seq_file *s, void *unused)
+{
+	struct mhi_sat_cntrl *sat_cntrl = s->private;
+	struct mhi_sat_log_entry *log;
+	unsigned int next, i, n;
+	unsigned long flags;
+
+	log = kmalloc_array(MHI_SAT_LOG_ENTRIES, sizeof(*log), GFP_KERNEL);
+	if (!log)
+		return -ENOMEM;
+
+	spin_lock_irqsave(&sat_cntrl->log_lock, flags);
+	memcpy(log, sat_cntrl->log, MHI_SAT_LOG_ENTRIES * sizeof(*log));
+	next = sat_cntrl->log_next;
+	spin_unlock_irqrestore(&sat_cntrl->log_lock, flags);
+
+	if (!next) {
+		seq_puts(s, "(the remote has asked for nothing)\n");
+		goto out;
+	}
+
+	n = min_t(unsigned int, next, MHI_SAT_LOG_ENTRIES);
+
+	for (i = next - n; i < next; i++) {
+		struct mhi_sat_log_entry *e = &log[i % MHI_SAT_LOG_ENTRIES];
+
+		seq_printf(s, "[%5llu.%06llu] %-11s ", e->ts / NSEC_PER_SEC,
+			   (e->ts % NSEC_PER_SEC) / 1000, mhi_sat_cmd_str(e->type));
+
+		switch (e->type) {
+		case MHI_PKT_TYPE_IOMMU_MAP_CMD:
+			seq_printf(s, "phys 0x%016llx size %u", e->ptr, e->size);
+			break;
+		case MHI_PKT_TYPE_CTXT_UPDATE_CMD:
+			seq_printf(s, "%s %-3u base 0x%016llx size %u",
+				   e->er ? "ring" : "chan", e->id, e->ptr,
+				   e->size);
+			break;
+		default:
+			seq_printf(s, "chan %-3u", e->id);
+			break;
+		}
+
+		seq_printf(s, "  -> %s\n",
+			   e->ccs == MHI_EV_CC_SUCCESS ? "granted" : "REFUSED");
+	}
+
+out:
+	kfree(log);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mhi_sat_log);
+
+/* Send the hello again. Reading this file is the trigger. */
+static int mhi_sat_hello_show(struct seq_file *s, void *unused)
+{
+	struct mhi_sat_cntrl *sat_cntrl = s->private;
+	int ret;
+
+	if (!sat_cntrl->subsys->rpdev) {
+		seq_puts(s, "no link\n");
+		return 0;
+	}
+
+	ret = mhi_sat_send_hello(sat_cntrl);
+	seq_printf(s, "hello seq %u: %s (%d)\n", sat_cntrl->seq,
+		   ret ? "failed" : "sent", ret);
+
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mhi_sat_hello);
+
+/*
+ * Is the remote's satellite client listening at all?
+ *
+ * Nothing it is normally sent requires an answer, so a client that is loaded
+ * but uninterested looks exactly like one that was never started. SYS_ERR is
+ * the exception: the remote must acknowledge it. An ack therefore means the
+ * client is alive and reading our messages, and the reason it never asks for
+ * its channels lies inside it; silence means our messages are not reaching it
+ * at all, which is a problem on this side of the link.
+ *
+ * Note this tells the remote the device has died. A client that believes it
+ * will not come back for the rest of this boot, so probe last.
+ */
+#define MHI_SAT_PROBE_TIMEOUT_MS	2000
+
+static int mhi_sat_probe_show(struct seq_file *s, void *unused)
+{
+	struct mhi_sat_cntrl *sat_cntrl = s->private;
+	unsigned long left;
+	int ret;
+
+	if (!sat_cntrl->subsys->rpdev) {
+		seq_puts(s, "no link\n");
+		return 0;
+	}
+
+	mutex_lock(&sat_cntrl->cmd_wait_mutex);
+
+	ret = mhi_sat_send_sys_err_cmd(sat_cntrl);
+	if (ret) {
+		seq_printf(s, "SYS_ERR: send failed (%d)\n", ret);
+		goto out;
+	}
+
+	seq_printf(s, "SYS_ERR: sent, seq %u\n", sat_cntrl->last_cmd_seq);
+
+	left = wait_for_completion_timeout(&sat_cntrl->completion,
+				msecs_to_jiffies(MHI_SAT_PROBE_TIMEOUT_MS));
+	if (left)
+		seq_printf(s, "reply:   acked, ccs %d -- remote is listening\n",
+			   sat_cntrl->last_cmd_ccs);
+	else
+		seq_printf(s, "reply:   none after %u ms -- remote is silent\n",
+			   MHI_SAT_PROBE_TIMEOUT_MS);
+
+out:
+	mutex_unlock(&sat_cntrl->cmd_wait_mutex);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(mhi_sat_probe);
+
+static void mhi_sat_debugfs_create(struct mhi_sat_cntrl *sat_cntrl)
+{
+	char name[32];
+
+	snprintf(name, sizeof(name), "%s-%08x", sat_cntrl->subsys->name,
+		 sat_cntrl->dev_id);
+
+	sat_cntrl->dbgfs = debugfs_create_dir(name, mhi_sat_debugfs_root);
+
+	debugfs_create_file("status", 0444, sat_cntrl->dbgfs, sat_cntrl,
+			    &mhi_sat_status_fops);
+	debugfs_create_file("log", 0444, sat_cntrl->dbgfs, sat_cntrl,
+			    &mhi_sat_log_fops);
+	debugfs_create_file("hello", 0400, sat_cntrl->dbgfs, sat_cntrl,
+			    &mhi_sat_hello_fops);
+	debugfs_create_file("probe", 0400, sat_cntrl->dbgfs, sat_cntrl,
+			    &mhi_sat_probe_fops);
 }
 
 static void mhi_sat_process_events(struct mhi_sat_cntrl *sat_cntrl,
@@ -691,18 +986,47 @@ static int mhi_sat_rpmsg_cb(struct rpmsg_device *rpdev, void *data, int len,
 		return 0;
 	}
 
+	dev_dbg(&rpdev->dev,
+		"sat: rx dev 0x%x msg 0x%x seq %u reply_seq %u payload %u\n",
+		hdr->dev_id, hdr->msg_id, hdr->seq, hdr->reply_seq,
+		hdr->payload_size);
+
 	sat_cntrl = find_sat_cntrl_by_id(subsys, hdr->dev_id);
-	if (!sat_cntrl)
+	if (!sat_cntrl) {
+		/*
+		 * The remote is talking about a device we never announced. Say
+		 * so: dropping this silently makes an id mismatch look exactly
+		 * like a remote that never said anything at all.
+		 */
+		dev_warn_once(&rpdev->dev,
+			      "sat: message for unknown device 0x%x, dropping\n",
+			      hdr->dev_id);
 		return 0;
+	}
+
+	/*
+	 * The remote has never been heard from on some boards, so say when it
+	 * first is -- without needing dynamic debug armed beforehand to catch it.
+	 */
+	if (!sat_cntrl->rx_cmds && !sat_cntrl->rx_evts)
+		dev_info(&rpdev->dev, "sat: first message from %s, msg 0x%x\n",
+			 subsys->name, hdr->msg_id);
 
 	/* completions are handled inline regardless of state */
 	if (hdr->msg_id == SAT_MSG_ID_EVT) {
+		sat_cntrl->rx_evts++;
 		mhi_sat_process_events(sat_cntrl, hdr, pkt);
 		return 0;
 	}
 
-	if (unlikely(!MHI_SAT_ACTIVE(sat_cntrl)))
+	sat_cntrl->rx_cmds++;
+
+	if (unlikely(!MHI_SAT_ACTIVE(sat_cntrl))) {
+		dev_warn_once(&rpdev->dev,
+			      "sat: msg 0x%x for device 0x%x while state %d, dropping\n",
+			      hdr->msg_id, hdr->dev_id, sat_cntrl->state);
 		return 0;
+	}
 
 	/* commands may sleep (DMA mapping, channel start): defer to a worker */
 	packet = kmalloc(sizeof(*packet) + len, GFP_ATOMIC);
@@ -878,6 +1202,8 @@ static void mhi_sat_dev_remove(struct mhi_device *mhi_dev)
 		return;
 	}
 
+	debugfs_remove_recursive(sat_cntrl->dbgfs);
+
 	cancel_work_sync(&sat_cntrl->connect_work);
 	cancel_work_sync(&sat_cntrl->process_work);
 
@@ -956,6 +1282,7 @@ static int mhi_sat_dev_probe(struct mhi_device *mhi_dev,
 		mutex_init(&sat_cntrl->cmd_wait_mutex);
 		spin_lock_init(&sat_cntrl->pkt_lock);
 		spin_lock_init(&sat_cntrl->state_lock);
+		spin_lock_init(&sat_cntrl->log_lock);
 		INIT_WORK(&sat_cntrl->connect_work, mhi_sat_connect_worker);
 		INIT_WORK(&sat_cntrl->process_work, mhi_sat_process_worker);
 		INIT_LIST_HEAD(&sat_cntrl->dev_list);
@@ -967,6 +1294,8 @@ static int mhi_sat_dev_probe(struct mhi_device *mhi_dev,
 		list_add(&sat_cntrl->node, &subsys->cntrl_list);
 		spin_unlock_irq(&subsys->cntrl_lock);
 		mutex_unlock(&subsys->cntrl_mutex);
+
+		mhi_sat_debugfs_create(sat_cntrl);
 	}
 
 	sat_cntrl->er_base = min(sat_cntrl->er_base, er_index);
@@ -1037,6 +1366,8 @@ static int __init mhi_sat_init(void)
 		INIT_LIST_HEAD(&subsys->cntrl_list);
 	}
 
+	mhi_sat_debugfs_root = debugfs_create_dir(MHI_SAT_DRIVER_NAME, NULL);
+
 	ret = register_rpmsg_driver(&mhi_sat_rpmsg_driver);
 	if (ret)
 		goto err_free;
@@ -1050,6 +1381,7 @@ static int __init mhi_sat_init(void)
 err_rpmsg:
 	unregister_rpmsg_driver(&mhi_sat_rpmsg_driver);
 err_free:
+	debugfs_remove_recursive(mhi_sat_debugfs_root);
 	subsys = mhi_sat_subsys_array;
 	for (i = 0; i < SUBSYS_MAX; i++, subsys++)
 		mutex_destroy(&subsys->cntrl_mutex);
@@ -1066,6 +1398,8 @@ static void __exit mhi_sat_exit(void)
 
 	mhi_driver_unregister(&mhi_sat_dev_driver);
 	unregister_rpmsg_driver(&mhi_sat_rpmsg_driver);
+
+	debugfs_remove_recursive(mhi_sat_debugfs_root);
 
 	for (i = 0; i < SUBSYS_MAX; i++, subsys++)
 		mutex_destroy(&subsys->cntrl_mutex);
