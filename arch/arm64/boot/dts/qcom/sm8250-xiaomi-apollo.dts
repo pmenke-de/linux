@@ -810,6 +810,17 @@
 		compatible = "qcom,q6voice-mhi";
 		iommus = <&apps_smmu 0x1801 0x0>;
 	};
+
+	/*
+	 * Calibration handed to the ADSP. Same stream id as the mailbox: the
+	 * ADSP reaches all of this through its own IOMMU, so the addresses it
+	 * is given have to be allocated in that domain rather than being CPU
+	 * physical addresses.
+	 */
+	q6voicecal: calibration {
+		compatible = "qcom,q6voice-cal";
+		iommus = <&apps_smmu 0x1801 0x0>;
+	};
 };
 
 &q6asmdai {

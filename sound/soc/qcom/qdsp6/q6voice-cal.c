@@ -9,10 +9,18 @@
  * lives in userspace, so they arrive here as firmware.
  *
  * Handing them over is a two step affair. The ADSP is first lent the memory --
- * by physical address, through a table describing the blocks, which is why
- * there are two allocations below -- and answers with a handle. Individual
- * commands then refer to the calibration by that handle plus an address and a
- * length, so the same block can back several registrations.
+ * through a table describing the blocks, which is why there are two
+ * allocations below -- and answers with a handle. Individual commands then
+ * refer to the calibration by that handle plus an address and a length, so the
+ * same block can back several registrations.
+ *
+ * Despite the command being named "map physical", the addresses in it are not
+ * CPU physical addresses: the ADSP reaches DDR through its own IOMMU, so what
+ * it needs is an address in *its* domain. Everything here is therefore
+ * allocated against a device carrying the ADSP's stream id, exactly as the
+ * voice mailbox is. Handing over a CPU physical address instead makes the ADSP
+ * fault on an address it cannot translate, which resets the board outright --
+ * no kernel log, because the kernel is not involved in the failure.
  *
  * The blob itself is a sequence of parameters the ADSP interprets; the kernel
  * only has to place it somewhere the ADSP can read and describe where it is.
@@ -20,9 +28,12 @@
  */
 
 #include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include "q6mvm.h"
 #include "q6voice-cal.h"
@@ -39,13 +50,13 @@ struct q6voice_cal_file_hdr {
 };
 
 struct q6voice_cal {
-	struct device *dev;
+	struct device *dev;	/* carries the ADSP's stream id */
 
 	void *table;		/* block list the ADSP reads */
-	phys_addr_t table_phys;
+	dma_addr_t table_iova;
 
 	void *data;		/* the calibration blocks themselves */
-	phys_addr_t data_phys;
+	dma_addr_t data_iova;
 	u32 data_size;		/* what the calibration actually occupies */
 	u32 block_size;		/* what was lent: page aligned, as required */
 
@@ -54,6 +65,12 @@ struct q6voice_cal {
 
 	u32 mem_handle;
 };
+
+/*
+ * The platform device exists only to carry the IOMMU stream id; the
+ * calibration is loaded lazily from the call path, which runs elsewhere.
+ */
+static struct device *q6voice_cal_dev;
 
 /*
  * What the ADSP expects to find at the address given to
@@ -82,9 +99,11 @@ void q6voice_cal_free(struct q6voice_cal *cal)
 	}
 
 	if (cal->table)
-		free_pages_exact(cal->table, PAGE_SIZE);
+		dma_free_coherent(cal->dev, PAGE_SIZE, cal->table,
+				  cal->table_iova);
 	if (cal->data)
-		free_pages_exact(cal->data, cal->block_size);
+		dma_free_coherent(cal->dev, cal->block_size, cal->data,
+				  cal->data_iova);
 	kfree(cal->col_info);
 	kfree(cal);
 }
@@ -103,6 +122,15 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
 	struct q6voice_cal *cal;
 	u32 col_size, data_size;
 	int ret;
+
+	/*
+	 * No device means no stream id to allocate against, and an address the
+	 * ADSP cannot translate is worse than no calibration at all.
+	 */
+	if (!q6voice_cal_dev)
+		return NULL;
+
+	dev = q6voice_cal_dev;
 
 	ret = firmware_request_nowarn(&fw, name, dev);
 	if (ret)
@@ -150,25 +178,23 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name)
 	 * calibration into whatever happens to follow it.
 	 */
 	cal->block_size = PAGE_ALIGN(data_size);
-	cal->data = alloc_pages_exact(cal->block_size, GFP_KERNEL | __GFP_ZERO);
+	cal->data = dma_alloc_coherent(dev, cal->block_size, &cal->data_iova,
+				       GFP_KERNEL);
 	if (!cal->data)
 		goto err_free;
 
 	memcpy(cal->data, fw->data + sizeof(*hdr) + col_size, data_size);
-	cal->data_phys = virt_to_phys(cal->data);
 
-	cal->table = alloc_pages_exact(PAGE_SIZE, GFP_KERNEL | GFP_DMA32 |
-					__GFP_ZERO);
+	cal->table = dma_alloc_coherent(dev, PAGE_SIZE, &cal->table_iova,
+					GFP_KERNEL);
 	if (!cal->table)
 		goto err_free;
 
-	cal->table_phys = virt_to_phys(cal->table);
-
 	table = cal->table;
-	table->block_addr = cpu_to_le64(cal->data_phys);
+	table->block_addr = cpu_to_le64(cal->data_iova);
 	table->block_size = cpu_to_le32(cal->block_size);
 
-	ret = q6mvm_map_memory(cal->table_phys, sizeof(*table),
+	ret = q6mvm_map_memory(cal->table_iova, sizeof(*table),
 			       &cal->mem_handle);
 	if (ret) {
 		dev_err(dev, "failed to lend calibration to the ADSP: %d\n",
@@ -197,11 +223,45 @@ int q6voice_cal_register_vol(struct q6voice_cal *cal,
 	if (!cal)
 		return 0;
 
-	return q6cvp_register_vol_cal(cvp, cal->mem_handle, cal->data_phys,
+	return q6cvp_register_vol_cal(cvp, cal->mem_handle, cal->data_iova,
 				      cal->data_size, cal->col_info,
 				      cal->col_size);
 }
 EXPORT_SYMBOL_GPL(q6voice_cal_register_vol);
+
+static int q6voice_cal_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	int ret;
+
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return dev_err_probe(dev, ret, "no 32-bit DMA\n");
+
+	q6voice_cal_dev = dev;
+	return 0;
+}
+
+static void q6voice_cal_remove(struct platform_device *pdev)
+{
+	q6voice_cal_dev = NULL;
+}
+
+static const struct of_device_id q6voice_cal_device_id[] = {
+	{ .compatible = "qcom,q6voice-cal" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, q6voice_cal_device_id);
+
+static struct platform_driver q6voice_cal_platform_driver = {
+	.driver = {
+		.name = "q6voice-cal",
+		.of_match_table = q6voice_cal_device_id,
+	},
+	.probe = q6voice_cal_probe,
+	.remove = q6voice_cal_remove,
+};
+module_platform_driver(q6voice_cal_platform_driver);
 
 MODULE_DESCRIPTION("Q6Voice calibration");
 MODULE_LICENSE("GPL v2");
