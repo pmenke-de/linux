@@ -821,16 +821,16 @@
  */
 &q6mvm {
 	/*
-	 * The audio DSP issues its transfers across a run of stream ids, not
-	 * just the first one -- the vendor spells this out as a sid mask of
-	 * 0xf alongside the same 0x1801 base. Matching only 0x1801 leaves the
-	 * rest unmapped, and an access on one of those faults in the SMMU,
-	 * which on this board resets it outright rather than reporting
-	 * anything.
+	 * Same stream id as the audio DAIs next door, and the same mask: the
+	 * SMMU matches a stream once, so two devices naming 0x1801 with
+	 * different masks cannot both be placed. Widening this to the vendor's
+	 * 0xf conflicts with service@7:dais, and the loser is dropped to
+	 * direct DMA without a word -- which hands the DSP a physical address
+	 * where it expects one of its own.
 	 */
 	q6voicemhi: mailbox {
 		compatible = "qcom,q6voice-mhi";
-		iommus = <&apps_smmu 0x1801 0xf>;
+		iommus = <&apps_smmu 0x1801 0x0>;
 	};
 
 	/*
