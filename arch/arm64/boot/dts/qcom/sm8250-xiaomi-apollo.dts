@@ -747,9 +747,9 @@
 	};
 
 	speaker-dai-link {
-		link-name = "Tertiary TDM Playback";
+		link-name = "Tertiary MI2S Playback";
 		cpu {
-			sound-dai = <&q6afedai TERTIARY_TDM_RX_0>;
+			sound-dai = <&q6afedai TERTIARY_MI2S_RX>;
 		};
 
 		platform {
@@ -792,21 +792,10 @@
 	};
 };
 
-/*
- * The two CS35L41 amplifiers share the tertiary frame, one slot each, which is
- * how Android drives them -- and call audio has to follow, since its downlink
- * lands on TERT_TDM_RX_0 there. Framing values are the ones the amplifier wants
- * (see sm8250-xiaomi-elish-common.dtsi, same SoC and same codec).
- */
 &q6afedai {
-	dai@56 {
-		reg = <TERTIARY_TDM_RX_0>;
-		qcom,tdm-sync-mode = <0>;
-		qcom,tdm-sync-src = <1>;
-		qcom,tdm-data-out = <0>;
-		qcom,tdm-invert-sync = <1>;
-		qcom,tdm-data-delay = <1>;
-		qcom,tdm-data-align = <0>;
+	dai@20 {
+		reg = <TERTIARY_MI2S_RX>;
+		qcom,sd-lines = <1>;
 	};
 };
 
