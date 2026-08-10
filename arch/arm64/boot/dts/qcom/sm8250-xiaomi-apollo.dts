@@ -806,9 +806,17 @@
  * the ADSP audio stream ID so its mappings land in the right domain.
  */
 &q6mvm {
+	/*
+	 * The audio DSP issues its transfers across a run of stream ids, not
+	 * just the first one -- the vendor spells this out as a sid mask of
+	 * 0xf alongside the same 0x1801 base. Matching only 0x1801 leaves the
+	 * rest unmapped, and an access on one of those faults in the SMMU,
+	 * which on this board resets it outright rather than reporting
+	 * anything.
+	 */
 	q6voicemhi: mailbox {
 		compatible = "qcom,q6voice-mhi";
-		iommus = <&apps_smmu 0x1801 0x0>;
+		iommus = <&apps_smmu 0x1801 0xf>;
 	};
 
 	/*
@@ -819,7 +827,7 @@
 	 */
 	q6voicecal: calibration {
 		compatible = "qcom,q6voice-cal";
-		iommus = <&apps_smmu 0x1801 0x0>;
+		iommus = <&apps_smmu 0x1801 0xf>;
 	};
 };
 
