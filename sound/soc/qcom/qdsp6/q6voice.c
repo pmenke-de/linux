@@ -146,6 +146,16 @@ enum {
 	Q6VOICE_CAL_REGISTER,	/* also point the vocproc at it */
 };
 
+/*
+ * Re-read the calibration files at the start of every call rather than once.
+ * Only useful while working out what the DSP will accept: it makes trying a
+ * different file a matter of copying it, and the memory the last attempt was
+ * lent went away with the session that lent it.
+ */
+static bool cal_reload;
+module_param(cal_reload, bool, 0644);
+MODULE_PARM_DESC(cal_reload, "Re-read the calibration files on every call.");
+
 static int cal_level = Q6VOICE_CAL_NONE;
 module_param(cal_level, int, 0644);
 MODULE_PARM_DESC(cal_level,
@@ -281,7 +291,11 @@ static int q6voice_path_start(struct q6voice_path *p)
 	 * simply fails. Absent calibration is not an error -- the call
 	 * proceeds, and only the volume command notices.
 	 */
-	if (cal_level >= Q6VOICE_CAL_LEND && !p->v->cal_tried) {
+	if (cal_level >= Q6VOICE_CAL_LEND && (!p->v->cal_tried || cal_reload)) {
+		q6voice_cal_free(p->v->dev_cfg);
+		q6voice_cal_free(p->v->cal);
+		q6voice_cal_free(p->v->vol_cal);
+
 		p->v->cal_tried = true;
 		p->v->dev_cfg = q6voice_cal_load(dev, Q6VOICE_DEV_CFG_FIRMWARE,
 						 mvm);

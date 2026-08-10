@@ -44,10 +44,11 @@ DEVCFG = ("VDPILUT0", "VDPICDFT", "VDPICDOT", 4, 2)
 # Which table each of the three registrations wants, and how it is described.
 # The ADSP takes them in this order and a volume table is an overlay on the
 # other two, so emitting one without the others is not much use.
+# family, column description, whether its parameters carry an instance id
 KINDS = {
-    "devcfg": (None, None),
-    "cal": ("static", "vocproc_inst"),
-    "volcal": ("dynamic", "volume"),
+    "devcfg": (None, None, False),
+    "cal": ("static", "vocproc_inst", True),
+    "volcal": ("dynamic", "volume", True),
 }
 
 # How the calibration table is indexed. The ADSP needs this to turn a volume
@@ -228,7 +229,7 @@ def main():
                     help="omit the header the kernel expects")
     args = ap.parse_args()
 
-    family, columns = KINDS[args.kind]
+    family, columns, instance = KINDS[args.kind]
 
     if family is None:
         key = (args.tx, args.rx)
@@ -254,7 +255,13 @@ def main():
     if args.output:
         blob = bytearray()
         for mid, iid, pid, payload in records[args.step]:
-            blob += struct.pack("<4I", mid, iid, pid, len(payload))
+            # A table that stores no instance ids describes its parameters
+            # without one; inventing a zero changes where every field after it
+            # is read from.
+            if instance:
+                blob += struct.pack("<4I", mid, iid, pid, len(payload))
+            else:
+                blob += struct.pack("<3I", mid, pid, len(payload))
             blob += payload
             if len(payload) % 4:
                 blob += b"\0" * (4 - len(payload) % 4)
