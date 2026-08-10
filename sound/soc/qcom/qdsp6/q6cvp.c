@@ -31,6 +31,7 @@
 #define VSS_MODULE_CVD_GENERIC				0x0001316E
 #define VSS_PARAM_VOCPROC_TX_CHANNEL_INFO		0x0001328E
 #define VSS_PARAM_VOCPROC_RX_CHANNEL_INFO		0x0001328F
+#define VSS_PARAM_VOCPROC_EC_REF_CHANNEL_INFO		0x00013290
 #define VSS_NUM_CHANNELS_MAX				32
 #define PCM_CHANNEL_FL					1
 #define PCM_CHANNEL_FR					2
@@ -436,8 +437,19 @@ int q6cvp_set_channel_info(struct q6voice_session *cvp)
 	if (ret)
 		return ret;
 
-	return q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_TX_CHANNEL_INFO,
-					  tx_channels);
+	ret = q6cvp_set_channel_info_one(cvp, VSS_PARAM_VOCPROC_TX_CHANNEL_INFO,
+					 tx_channels);
+	if (ret)
+		return ret;
+
+	/*
+	 * The echo reference is described whether or not one is in use, and it
+	 * describes the render side: it is the render output that would be
+	 * referenced. The vendor sends all three unconditionally.
+	 */
+	return q6cvp_set_channel_info_one(cvp,
+					  VSS_PARAM_VOCPROC_EC_REF_CHANNEL_INFO,
+					  rx_channels);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_channel_info);
 
