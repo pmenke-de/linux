@@ -274,26 +274,12 @@ static int q6voice_path_start(struct q6voice_path *p)
 	if (ret)
 		dev_warn(dev, "topology commit failed: %d\n", ret);
 
-configured:
-	ret = q6cvp_enable(cvp, true);
-	if (ret) {
-		dev_err(dev, "failed to enable cvp: %d\n", ret);
-		goto cvp_err;
-	}
-
-	ret = q6mvm_attach(mvm, cvp, true);
-	if (ret) {
-		dev_err(dev, "failed to attach cvp to mvm: %d\n", ret);
-		goto attach_err;
-	}
-
-	if (setup_level > 0)
-		goto started;
-
 	/*
-	 * The volume step below is resolved through a calibration table, so
-	 * the table has to reach the ADSP first. Absent calibration is not an
-	 * error -- the call proceeds, and only the volume command notices.
+	 * Calibration goes in while the vocproc is still being described.
+	 * Once it has been enabled and attached it is running, and a running
+	 * vocproc will not take a new table: the command is well formed and
+	 * simply fails. Absent calibration is not an error -- the call
+	 * proceeds, and only the volume command notices.
 	 */
 	if (cal_level >= Q6VOICE_CAL_LEND && !p->v->cal_tried) {
 		p->v->cal_tried = true;
@@ -325,6 +311,23 @@ configured:
 			dev_warn(dev, "failed to register volume calibration: %d\n",
 				 ret);
 	}
+
+configured:
+	ret = q6cvp_enable(cvp, true);
+	if (ret) {
+		dev_err(dev, "failed to enable cvp: %d\n", ret);
+		goto cvp_err;
+	}
+
+	ret = q6mvm_attach(mvm, cvp, true);
+	if (ret) {
+		dev_err(dev, "failed to attach cvp to mvm: %d\n", ret);
+		goto attach_err;
+	}
+
+	if (setup_level > 0)
+		goto started;
+
 
 	/*
 	 * Volume and mute, before the call runs and in that order, as the
