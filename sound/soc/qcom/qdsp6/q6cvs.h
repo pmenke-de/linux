@@ -7,5 +7,7 @@
 struct q6voice_session;
 
 struct q6voice_session *q6cvs_session_create(enum q6voice_path_type path);
+int q6cvs_set_mute(struct q6voice_session *cvs, u16 direction, bool mute,
+		   u16 ramp_ms);
 
 #endif /*_Q6_CVS_H */

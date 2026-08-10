@@ -11,6 +11,19 @@
 
 #define VSS_ISTREAM_CMD_CREATE_PASSIVE_CONTROL_SESSION	0x00011140
 
+#define VSS_IVOLUME_CMD_MUTE_V2				0x0001138B
+
+#define VSS_IVOLUME_MUTE_OFF				0
+#define VSS_IVOLUME_MUTE_ON				1
+
+struct vss_ivolume_cmd_mute_v2 {
+	struct apr_hdr hdr;
+
+	u16 direction;
+	u16 mute_flag;
+	u16 ramp_duration_ms;
+} __packed;
+
 struct vss_istream_cmd_create_control_session_cmd {
 	struct apr_hdr hdr;
 
@@ -40,6 +53,26 @@ struct q6voice_session *q6cvs_session_create(enum q6voice_path_type path)
 	return q6voice_session_create(Q6VOICE_SERVICE_CVS, path, &cmd.hdr);
 }
 EXPORT_SYMBOL_GPL(q6cvs_session_create);
+
+/*
+ * Mute state of the stream itself, as opposed to the device. The vendor sends
+ * this for the uplink on every call rather than trusting the ADSP's default.
+ */
+int q6cvs_set_mute(struct q6voice_session *cvs, u16 direction, bool mute,
+		   u16 ramp_ms)
+{
+	struct vss_ivolume_cmd_mute_v2 cmd = {0};
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_IVOLUME_CMD_MUTE_V2;
+
+	cmd.direction = direction;
+	cmd.mute_flag = mute ? VSS_IVOLUME_MUTE_ON : VSS_IVOLUME_MUTE_OFF;
+	cmd.ramp_duration_ms = ramp_ms;
+
+	return q6voice_common_send(cvs, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvs_set_mute);
 
 static int q6cvs_probe(struct apr_device *adev)
 {

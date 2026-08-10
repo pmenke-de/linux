@@ -38,6 +38,14 @@ struct q6voice_session {
 #define Q6VOICE_SVC_PORT	0x0103
 
 /*
+ * Direction for the VSS_IVOLUME commands, shared by the vocproc (volume) and
+ * the stream (mute). Note these are the other way round from
+ * VSS_IVOCPROC_DIRECTION_*, where RX is 0.
+ */
+#define VSS_IVOLUME_DIRECTION_TX	0
+#define VSS_IVOLUME_DIRECTION_RX	1
+
+/*
  * Name of the session we create. The sessions on this side are passive: the
  * modem owns the call and creates the matching active session, and the ADSP
  * pairs the two up by this string. Nothing validates it, so getting it wrong
@@ -57,6 +65,20 @@ static inline const char *q6voice_session_name(enum q6voice_path_type path)
 		return NULL;
 	}
 }
+
+/*
+ * Bridge to a modem that lives on another chip. Such a modem carries the call
+ * audio itself, over a link that must be held awake for the duration, so
+ * q6voice has to tell it when a call starts and ends. The bridge is a module of
+ * its own and is absent on boards with an internal modem, so it registers
+ * itself here rather than q6voice reaching for it.
+ */
+struct q6voice_modem_link {
+	int (*start)(void);
+	void (*end)(void);
+};
+
+void q6voice_set_modem_link(const struct q6voice_modem_link *link);
 
 int q6voice_common_probe(struct apr_device *adev, enum q6voice_service_type type);
 void q6voice_common_remove(struct apr_device *adev);

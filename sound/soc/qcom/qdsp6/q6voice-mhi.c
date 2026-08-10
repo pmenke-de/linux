@@ -21,15 +21,18 @@
  * through -- and a notification for when the modem comes and goes.
  */
 
+#include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/mhi.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
 #include <linux/sizes.h>
 
 #include "q6mvm.h"
+#include "q6voice-common.h"
 
 /*
  * Size and placement follow the vendor carveout: 128 KiB, and reachable by a
@@ -40,20 +43,123 @@
 struct q6voice_mhi {
 	struct device *adsp_dev;	/* mapped into the ADSP's IOMMU domain */
 	struct device *pcie_dev;	/* mapped into the PCIe/modem domain */
+	struct mhi_device *mhi_dev;	/* voted awake for the length of a call */
 
 	void *buf;
 	phys_addr_t phys;
 	dma_addr_t iova_adsp;
 	dma_addr_t iova_pcie;
 
+	struct dentry *debugfs;
+
+	unsigned int votes;
 	struct mutex lock;
 };
+
+/*
+ * Is anything actually crossing the mailbox?
+ *
+ * Every command in a call can succeed while the buffer stays untouched, which
+ * looks identical from the AP side to a call that works. The buffer starts
+ * zeroed and neither agent has a reason to write zeroes into it, so a non-zero
+ * byte is proof that the modem and the ADSP are talking to each other, and an
+ * all-zero buffer during a call is proof that they are not.
+ */
+static int q6voice_mhi_mailbox_show(struct seq_file *s, void *unused)
+{
+	struct q6voice_mhi *ctx = s->private;
+	const u8 *buf = ctx->buf;
+	size_t nonzero = 0;
+	size_t i;
+
+	/* Both agents write this behind our back; take the CPU's view back. */
+	dma_sync_single_for_cpu(ctx->adsp_dev, ctx->iova_adsp,
+				VOICE_MAILBOX_SIZE, DMA_FROM_DEVICE);
+
+	for (i = 0; i < VOICE_MAILBOX_SIZE; i++)
+		if (buf[i])
+			nonzero++;
+
+	seq_printf(s, "adsp iova:  %pad\n", &ctx->iova_adsp);
+	seq_printf(s, "pcie iova:  %pad\n", &ctx->iova_pcie);
+	seq_printf(s, "size:       %u\n", VOICE_MAILBOX_SIZE);
+	seq_printf(s, "votes:      %u\n", ctx->votes);
+	seq_printf(s, "nonzero:    %zu\n", nonzero);
+	seq_printf(s, "head:       %*ph\n", 64, buf);
+
+	dma_sync_single_for_device(ctx->adsp_dev, ctx->iova_adsp,
+				   VOICE_MAILBOX_SIZE, DMA_FROM_DEVICE);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(q6voice_mhi_mailbox);
 
 /*
  * The platform device and the MHI device show up independently and in no fixed
  * order, so the two halves rendezvous through this.
  */
 static struct q6voice_mhi *q6voice_mhi_ctx;
+
+/*
+ * Hold the modem awake while a call runs.
+ *
+ * Nothing else keeps it busy: the voice frames go straight to the ADSP without
+ * the host touching the link, so from the host's point of view an established
+ * call looks exactly like an idle modem, and the autosuspend timer takes it
+ * down a couple of seconds in. The frames stop arriving and the call goes
+ * silent while every command that set it up still reports success.
+ *
+ * Counted, because a call has a capture and a playback side and either may
+ * start first.
+ */
+static int q6voice_mhi_start(void)
+{
+	struct q6voice_mhi *ctx = q6voice_mhi_ctx;
+	int ret = 0;
+
+	if (!ctx)
+		return 0;
+
+	mutex_lock(&ctx->lock);
+
+	/* No modem bound means no link to hold up; let the call proceed. */
+	if (!ctx->mhi_dev)
+		goto out;
+
+	if (!ctx->votes) {
+		ret = mhi_device_get_sync(ctx->mhi_dev);
+		if (ret) {
+			dev_err(ctx->adsp_dev,
+				"failed to wake the modem: %d\n", ret);
+			goto out;
+		}
+	}
+
+	ctx->votes++;
+
+out:
+	mutex_unlock(&ctx->lock);
+	return ret;
+}
+
+static void q6voice_mhi_end(void)
+{
+	struct q6voice_mhi *ctx = q6voice_mhi_ctx;
+
+	if (!ctx)
+		return;
+
+	mutex_lock(&ctx->lock);
+
+	if (ctx->mhi_dev && ctx->votes && !--ctx->votes)
+		mhi_device_put(ctx->mhi_dev);
+
+	mutex_unlock(&ctx->lock);
+}
+
+static const struct q6voice_modem_link q6voice_mhi_link = {
+	.start	= q6voice_mhi_start,
+	.end	= q6voice_mhi_end,
+};
 
 static void q6voice_mhi_unmap_pcie(struct q6voice_mhi *ctx)
 {
@@ -119,6 +225,8 @@ static int q6voice_mhi_probe_mhi(struct mhi_device *mhi_dev,
 	 * the MHI device (which is a logical child with no DMA of its own).
 	 */
 	ret = q6voice_mhi_map_and_configure(ctx, mhi_dev->mhi_cntrl->cntrl_dev);
+	if (!ret)
+		ctx->mhi_dev = mhi_dev;
 	mutex_unlock(&ctx->lock);
 	if (ret)
 		return ret;
@@ -135,6 +243,14 @@ static void q6voice_mhi_remove_mhi(struct mhi_device *mhi_dev)
 		return;
 
 	mutex_lock(&ctx->lock);
+
+	/* A call may still be running; hand the wake reference back. */
+	if (ctx->votes) {
+		mhi_device_put(mhi_dev);
+		ctx->votes = 0;
+	}
+	ctx->mhi_dev = NULL;
+
 	q6voice_mhi_unmap_pcie(ctx);
 	mutex_unlock(&ctx->lock);
 }
@@ -205,6 +321,12 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, ctx);
 	q6voice_mhi_ctx = ctx;
 
+	ctx->debugfs = debugfs_create_dir("q6voice-mhi", NULL);
+	debugfs_create_file("mailbox", 0444, ctx->debugfs, ctx,
+			    &q6voice_mhi_mailbox_fops);
+
+	q6voice_set_modem_link(&q6voice_mhi_link);
+
 	/*
 	 * Register last: the modem may already be up, in which case this
 	 * probes the MHI side immediately and completes the configuration.
@@ -212,12 +334,14 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 	ret = mhi_driver_register(&q6voice_mhi_driver);
 	if (ret) {
 		dev_err(dev, "failed to register MHI driver: %d\n", ret);
-		goto err_unmap;
+		goto err_unregister;
 	}
 
 	return 0;
 
-err_unmap:
+err_unregister:
+	q6voice_set_modem_link(NULL);
+	debugfs_remove_recursive(ctx->debugfs);
 	q6voice_mhi_ctx = NULL;
 	dma_unmap_single(dev, ctx->iova_adsp, VOICE_MAILBOX_SIZE,
 			 DMA_BIDIRECTIONAL);
@@ -230,6 +354,9 @@ static void q6voice_mhi_remove(struct platform_device *pdev)
 {
 	struct q6voice_mhi *ctx = platform_get_drvdata(pdev);
 
+	debugfs_remove_recursive(ctx->debugfs);
+
+	q6voice_set_modem_link(NULL);
 	mhi_driver_unregister(&q6voice_mhi_driver);
 
 	mutex_lock(&ctx->lock);

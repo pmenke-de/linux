@@ -102,6 +102,21 @@ struct vss_icommon_cmd_set_param_media_format {
 #define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2	0x000112BF
 #define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V3	0x00013169
 
+#define VSS_IVOLUME_CMD_SET_STEP			0x000112C2
+
+struct vss_ivolume_cmd_set_step {
+	struct apr_hdr hdr;
+
+	/* Only VSS_IVOLUME_DIRECTION_RX is supported. */
+	u16 direction;
+
+	/* Index into the volume calibration table, not a linear gain. */
+	u32 value;
+
+	/* Ramp duration in ms; the supported range is 0 to 5000. */
+	u16 ramp_duration_ms;
+} __packed;
+
 struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
 	struct apr_hdr hdr;
 
@@ -281,6 +296,30 @@ int q6cvp_topology_commit(struct q6voice_session *cvp)
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
 EXPORT_SYMBOL_GPL(q6cvp_topology_commit);
+
+/*
+ * Ask the vocproc for an audible downlink.
+ *
+ * The step is an index into the ADSP's volume calibration table, not a gain:
+ * step 0 is the bottom of that table. Both the vendor kernel and this driver
+ * start every session there, and on Android the audio HAL immediately replaces
+ * it through a "Voice Rx Gain" mixer control. We have no such control, so
+ * nothing ever lifted the downlink off the floor.
+ */
+int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step, u16 ramp_ms)
+{
+	struct vss_ivolume_cmd_set_step cmd = {0};
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_IVOLUME_CMD_SET_STEP;
+
+	cmd.direction = VSS_IVOLUME_DIRECTION_RX;
+	cmd.value = step;
+	cmd.ramp_duration_ms = ramp_ms;
+
+	return q6voice_common_send(cvp, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvp_set_rx_volume);
 
 int q6cvp_enable(struct q6voice_session *cvp, bool state)
 {

@@ -16,6 +16,7 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 int q6cvp_set_channel_info(struct q6voice_session *cvp);
 int q6cvp_set_media_format(struct q6voice_session *cvp, u16 tx_port, u16 rx_port);
 int q6cvp_topology_commit(struct q6voice_session *cvp);
+int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step, u16 ramp_ms);
 int q6cvp_enable(struct q6voice_session *cvp, bool enable);
 
 #endif /*_Q6_CVP_H */

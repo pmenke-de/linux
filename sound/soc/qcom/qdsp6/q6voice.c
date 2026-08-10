@@ -37,6 +37,18 @@ struct q6voice {
 };
 
 /*
+ * Downlink volume for a call. Android's HAL maps the user-facing volume onto
+ * steps 0..5 and pushes the result down a mixer control; with no such control
+ * here, ask for the top of that range so calls are audible, and leave making
+ * it adjustable to whoever adds the control.
+ */
+#define Q6VOICE_RX_VOLUME_STEP	5
+
+/* Vendor defaults: a short ramp for volume, a long one for mute. */
+#define Q6VOICE_VOLUME_RAMP_MS	20
+#define Q6VOICE_MUTE_RAMP_MS	500
+
+/*
  * Which of the two create commands the vocproc expects. They carry the same
  * payload and differ only in opcode, but the choice is not cosmetic: a CVD
  * from 2.2 on refuses VSS_IVOCPROC_CMD_TOPOLOGY_COMMIT for a session that was
@@ -52,6 +64,32 @@ static bool q6voice_cvp_create_v3(const char *cvd_version)
 	return major > 2 || (major == 2 && minor >= 2);
 }
 
+/*
+ * Set once, by a driver that probes long before any call can start, and only
+ * ever read from a path that is already serialized by its own mutex.
+ */
+static const struct q6voice_modem_link *q6voice_modem_link;
+
+void q6voice_set_modem_link(const struct q6voice_modem_link *link)
+{
+	q6voice_modem_link = link;
+}
+EXPORT_SYMBOL_GPL(q6voice_set_modem_link);
+
+static int q6voice_modem_link_start(void)
+{
+	if (!q6voice_modem_link)
+		return 0;
+
+	return q6voice_modem_link->start();
+}
+
+static void q6voice_modem_link_end(void)
+{
+	if (q6voice_modem_link)
+		q6voice_modem_link->end();
+}
+
 static int q6voice_path_start(struct q6voice_path *p)
 {
 	struct device *dev = p->v->dev;
@@ -60,11 +98,26 @@ static int q6voice_path_start(struct q6voice_path *p)
 
 	dev_dbg(dev, "start path %d\n", p->type);
 
+	/*
+	 * Where the modem is a separate chip it DMAs the call audio into system
+	 * memory for as long as the call lasts, so the link to it must be held
+	 * awake throughout -- an idle link suspends after a couple of seconds
+	 * and the audio simply stops arriving. Vote first and release on the way
+	 * out, as the vendor does.
+	 */
+	ret = q6voice_modem_link_start();
+	if (ret) {
+		dev_err(dev, "failed to wake the modem link: %d\n", ret);
+		return ret;
+	}
+
 	mvm = p->runtime->sessions[Q6VOICE_SERVICE_MVM];
 	if (!mvm) {
 		mvm = q6mvm_session_create(p->type);
-		if (IS_ERR(mvm))
-			return PTR_ERR(mvm);
+		if (IS_ERR(mvm)) {
+			ret = PTR_ERR(mvm);
+			goto link_err;
+		}
 		p->runtime->sessions[Q6VOICE_SERVICE_MVM] = mvm;
 	}
 
@@ -76,15 +129,17 @@ static int q6voice_path_start(struct q6voice_path *p)
 	cvs = p->runtime->sessions[Q6VOICE_SERVICE_CVS];
 	if (!cvs) {
 		cvs = q6cvs_session_create(p->type);
-		if (IS_ERR(cvs))
-			return PTR_ERR(cvs);
+		if (IS_ERR(cvs)) {
+			ret = PTR_ERR(cvs);
+			goto link_err;
+		}
 		p->runtime->sessions[Q6VOICE_SERVICE_CVS] = cvs;
 	}
 
 	ret = q6mvm_attach_stream(mvm, cvs, true);
 	if (ret) {
 		dev_err(dev, "failed to attach stream to mvm: %d\n", ret);
-		return ret;
+		goto link_err;
 	}
 
 	/*
@@ -160,6 +215,21 @@ static int q6voice_path_start(struct q6voice_path *p)
 		goto attach_err;
 	}
 
+	/*
+	 * Volume and mute, before the call runs and in that order, as the
+	 * vendor does. Neither is fatal: the call is still established without
+	 * them, just inaudible, and saying so beats refusing to start.
+	 */
+	ret = q6cvp_set_rx_volume(cvp, Q6VOICE_RX_VOLUME_STEP,
+				  Q6VOICE_VOLUME_RAMP_MS);
+	if (ret)
+		dev_warn(dev, "failed to set rx volume: %d\n", ret);
+
+	ret = q6cvs_set_mute(cvs, VSS_IVOLUME_DIRECTION_TX, false,
+			     Q6VOICE_MUTE_RAMP_MS);
+	if (ret)
+		dev_warn(dev, "failed to unmute tx stream: %d\n", ret);
+
 	ret = q6mvm_start(mvm, true);
 	if (ret) {
 		dev_err(dev, "failed to start voice: %d\n", ret);
@@ -176,6 +246,8 @@ cvp_err:
 	q6cvp_enable(cvp, false);
 stream_err:
 	q6mvm_attach_stream(mvm, cvs, false);
+link_err:
+	q6voice_modem_link_end();
 	return ret;
 }
 
@@ -244,6 +316,8 @@ static void q6voice_path_stop(struct q6voice_path *p)
 		if (ret)
 			dev_err(dev, "failed to detach stream from mvm: %d\n", ret);
 	}
+
+	q6voice_modem_link_end();
 }
 
 static void q6voice_path_destroy(struct q6voice_path *p)
