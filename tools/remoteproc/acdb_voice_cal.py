@@ -36,6 +36,29 @@ FAMILIES = {
     "static": ("VSTILUT0", "VSTIOFST", "VSTICDFT", "VSTICDOT", 6, 4),
 }
 
+# How the calibration table is indexed. The ADSP needs this to turn a volume
+# step into a row, and it does not come from the file: the vendor library
+# carries it as constants, so it is reproduced here. The volume table is keyed
+# by one column more than the plain vocproc table -- the step itself, which is
+# the column with no "not applicable" value.
+COLUMNS = {
+    "static": [(0x00011350, 0x0001135C, 0x0001135E),
+               (0x00011352, 0x0001135C, 0x00000000),
+               (0x00011351, 0x0001135C, 0x00000000)],
+    "dynamic": [(0x00011350, 0x0001135C, 0x0001135E),
+                (0x00011352, 0x0001135C, 0x00000000),
+                (0x00011351, 0x0001135C, 0x00000000),
+                (0x00011358, 0x0001135C, 0xFFFFFFFF)],
+}
+
+
+def column_info(family):
+    cols = COLUMNS[family]
+    out = struct.pack("<I", len(cols))
+    for cid, ctype, na in cols:
+        out += struct.pack("<3I", cid, ctype, na)
+    return out
+
 
 def u32(buf, off):
     return struct.unpack_from("<I", buf, off)[0]
@@ -119,6 +142,9 @@ def main():
     ap.add_argument("--step", type=int, default=0,
                     help="which volume step to emit with -o")
     ap.add_argument("-o", "--output", help="write one step's parameters")
+    ap.add_argument("--col-info", help="override the built-in column description")
+    ap.add_argument("--raw", action="store_true",
+                    help="omit the header the kernel expects")
     args = ap.parse_args()
 
     if args.family == "dynamic":
@@ -139,13 +165,31 @@ def main():
               % (mid, iid, pid, len(payload)))
 
     if args.output:
+        blob = bytearray()
+        for mid, iid, pid, payload in records[args.step]:
+            blob += struct.pack("<4I", mid, iid, pid, len(payload))
+            blob += payload
+            if len(payload) % 4:
+                blob += b"\0" * (4 - len(payload) % 4)
+
+        if args.col_info:
+            with open(args.col_info, "rb") as f:
+                col = f.read()
+        else:
+            col = column_info(args.family)
+
         with open(args.output, "wb") as f:
-            for mid, iid, pid, payload in records[args.step]:
-                f.write(struct.pack("<4I", mid, iid, pid, len(payload)))
-                f.write(payload)
-                if len(payload) % 4:
-                    f.write(b"\0" * (4 - len(payload) % 4))
-        print("  wrote step %d to %s" % (args.step, args.output))
+            if args.raw:
+                f.write(blob)
+            else:
+                # Header the kernel's q6voice-cal.c expects.
+                f.write(struct.pack("<4I", 0x43563651, 1, len(col), len(blob)))
+                f.write(col)
+                f.write(blob)
+        print("  wrote step %d to %s (%d bytes%s)"
+              % (args.step, args.output, len(blob),
+                 "" if args.raw else ", %d byte header + %d column"
+                 % (16, len(col))))
 
 
 if __name__ == "__main__":

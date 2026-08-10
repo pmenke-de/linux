@@ -104,6 +104,30 @@ struct vss_icommon_cmd_set_param_media_format {
 
 #define VSS_IVOLUME_CMD_SET_STEP			0x000112C2
 
+#define VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA	0x00011374
+#define VSS_IVOCPROC_CMD_DEREGISTER_VOL_CALIBRATION_DATA	0x00011375
+
+/*
+ * Largest column description the ADSP accepts. The columns say how the
+ * calibration table is indexed -- which is what lets the ADSP turn a volume
+ * step into a row -- so this travels with the data rather than in it.
+ */
+#define VSS_MAX_COL_INFO_SIZE				324
+
+struct vss_ivocproc_cmd_register_vol_cal_data {
+	struct apr_hdr hdr;
+
+	u32 cal_mem_handle;
+	u32 cal_mem_address_lsw;
+	u32 cal_mem_address_msw;
+	u32 cal_mem_size;
+	u8 column_info[VSS_MAX_COL_INFO_SIZE];
+} __packed;
+
+struct vss_ivocproc_cmd_deregister_vol_cal_data {
+	struct apr_hdr hdr;
+} __packed;
+
 struct vss_ivolume_cmd_set_step {
 	struct apr_hdr hdr;
 
@@ -320,6 +344,46 @@ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step, u16 ramp_ms)
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_rx_volume);
+
+/*
+ * Point the vocproc at a volume calibration table already lent to the ADSP.
+ *
+ * Without this the ADSP has no table to look a volume step up in, and
+ * VSS_IVOLUME_CMD_SET_STEP fails -- which is what a call with everything else
+ * accepted and no audible downlink looks like from here.
+ */
+int q6cvp_register_vol_cal(struct q6voice_session *cvp, u32 mem_handle,
+			   phys_addr_t phys, u32 size,
+			   const void *col_info, u32 col_size)
+{
+	struct vss_ivocproc_cmd_register_vol_cal_data cmd = {0};
+
+	if (col_size > sizeof(cmd.column_info))
+		return -EINVAL;
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_IVOCPROC_CMD_REGISTER_VOL_CALIBRATION_DATA;
+
+	cmd.cal_mem_handle = mem_handle;
+	cmd.cal_mem_address_lsw = lower_32_bits(phys);
+	cmd.cal_mem_address_msw = upper_32_bits(phys);
+	cmd.cal_mem_size = size;
+	memcpy(cmd.column_info, col_info, col_size);
+
+	return q6voice_common_send(cvp, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvp_register_vol_cal);
+
+int q6cvp_deregister_vol_cal(struct q6voice_session *cvp)
+{
+	struct vss_ivocproc_cmd_deregister_vol_cal_data cmd = {0};
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_IVOCPROC_CMD_DEREGISTER_VOL_CALIBRATION_DATA;
+
+	return q6voice_common_send(cvp, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvp_deregister_vol_cal);
 
 int q6cvp_enable(struct q6voice_session *cvp, bool state)
 {

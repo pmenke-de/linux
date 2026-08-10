@@ -28,6 +28,60 @@ struct vss_ipktexg_cmd_set_mailbox_memory_config {
 	u32 mem_size;
 } __packed;
 
+#define VSS_IMEMORY_CMD_MAP_PHYSICAL			0x00011334
+#define VSS_IMEMORY_RSP_MAP				0x00011336
+#define VSS_IMEMORY_CMD_UNMAP				0x00011337
+
+/*
+ * Lend the ADSP a block of memory. Calibration is too big to pass inline, so
+ * it is placed in memory the ADSP is told about once and then referred to by
+ * the handle this returns.
+ *
+ * The block list is not passed directly: the command points at a table that
+ * itself lives in memory, which is why there are two levels of address here.
+ * Physical addresses throughout -- the ADSP is not going through an IOMMU for
+ * this, so no mapping of ours is involved.
+ */
+struct vss_imemory_table_descriptor {
+	u32 mem_address_lsw;
+	u32 mem_address_msw;
+	u32 mem_size;
+} __packed;
+
+struct vss_imemory_block {
+	u64 mem_address;
+	u32 mem_size;
+} __packed;
+
+struct vss_imemory_table {
+	struct vss_imemory_table_descriptor next_table_descriptor;
+	struct vss_imemory_block blocks[1];
+} __packed;
+
+struct vss_imemory_cmd_map_physical {
+	struct apr_hdr hdr;
+	struct vss_imemory_table_descriptor table_descriptor;
+	bool is_cached;
+	u16 cache_line_size;
+	u32 access_mask;
+	u32 page_align;
+	u8 min_data_width;
+	u8 max_data_width;
+} __packed;
+
+struct vss_imemory_cmd_unmap {
+	struct apr_hdr hdr;
+	u32 mem_handle;
+} __packed;
+
+/* What the ADSP supports; the values are not negotiable. */
+#define VSS_IMEMORY_CACHE_LINE_SIZE	128
+#define VSS_IMEMORY_PAGE_ALIGN		4096
+#define VSS_IMEMORY_ACCESS_READ		BIT(0)
+#define VSS_IMEMORY_ACCESS_WRITE	BIT(1)
+#define VSS_IMEMORY_MIN_DATA_WIDTH	8
+#define VSS_IMEMORY_MAX_DATA_WIDTH	64
+
 #define VSS_IMVM_CMD_CREATE_PASSIVE_CONTROL_SESSION	0x000110FF
 
 struct vss_imvm_cmd_create_control_session_cmd {
@@ -196,6 +250,55 @@ int q6mvm_set_mailbox_memory(u64 adsp_iova, u64 pcie_iova, u32 size)
 				       sizeof(cmd));
 }
 EXPORT_SYMBOL_GPL(q6mvm_set_mailbox_memory);
+
+/*
+ * Hand @table_phys (which must describe @block_phys) to the ADSP and return
+ * the handle it answers with. The caller keeps both allocations alive until
+ * q6mvm_unmap_memory(), since the ADSP reads them whenever it pleases.
+ */
+int q6mvm_map_memory(phys_addr_t table_phys, u32 table_size, u32 *handle)
+{
+	struct vss_imemory_cmd_map_physical cmd = {0};
+	u32 rsp = 0;
+	int ret;
+
+	cmd.hdr.opcode = VSS_IMEMORY_CMD_MAP_PHYSICAL;
+	cmd.table_descriptor.mem_address_lsw = lower_32_bits(table_phys);
+	cmd.table_descriptor.mem_address_msw = upper_32_bits(table_phys);
+	cmd.table_descriptor.mem_size = table_size;
+	cmd.is_cached = true;
+	cmd.cache_line_size = VSS_IMEMORY_CACHE_LINE_SIZE;
+	cmd.access_mask = VSS_IMEMORY_ACCESS_READ | VSS_IMEMORY_ACCESS_WRITE;
+	cmd.page_align = VSS_IMEMORY_PAGE_ALIGN;
+	cmd.min_data_width = VSS_IMEMORY_MIN_DATA_WIDTH;
+	cmd.max_data_width = VSS_IMEMORY_MAX_DATA_WIDTH;
+
+	/* The handle comes back in a reply of its own, not a basic result. */
+	ret = q6voice_common_send_svc_rsp(Q6VOICE_SERVICE_MVM, &cmd.hdr,
+					  sizeof(cmd), VSS_IMEMORY_RSP_MAP,
+					  &rsp, sizeof(rsp));
+	if (ret)
+		return ret;
+
+	if (!rsp)
+		return -EINVAL;
+
+	*handle = rsp;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(q6mvm_map_memory);
+
+int q6mvm_unmap_memory(u32 handle)
+{
+	struct vss_imemory_cmd_unmap cmd = {0};
+
+	cmd.hdr.opcode = VSS_IMEMORY_CMD_UNMAP;
+	cmd.mem_handle = handle;
+
+	return q6voice_common_send_svc(Q6VOICE_SERVICE_MVM, &cmd.hdr,
+				       sizeof(cmd));
+}
+EXPORT_SYMBOL_GPL(q6mvm_unmap_memory);
 
 static int q6mvm_probe(struct apr_device *adev)
 {

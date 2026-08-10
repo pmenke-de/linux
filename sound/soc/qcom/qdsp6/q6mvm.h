@@ -15,5 +15,7 @@ int q6mvm_attach_stream(struct q6voice_session *mvm, struct q6voice_session *cvs
 int q6mvm_start(struct q6voice_session *mvm, bool state);
 int q6mvm_get_cvd_version(char *version, size_t len);
 int q6mvm_set_mailbox_memory(u64 adsp_iova, u64 pcie_iova, u32 size);
+int q6mvm_map_memory(phys_addr_t table_phys, u32 table_size, u32 *handle);
+int q6mvm_unmap_memory(u32 handle);
 
 #endif /*_Q6_MVM_H */

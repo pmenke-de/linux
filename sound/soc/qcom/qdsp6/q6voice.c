@@ -12,6 +12,7 @@
 #include "q6cvp.h"
 #include "q6cvs.h"
 #include "q6mvm.h"
+#include "q6voice-cal.h"
 #include "q6voice-common.h"
 
 struct q6voice_path_runtime {
@@ -33,8 +34,19 @@ struct q6voice {
 	struct device *dev;
 	/* cached so the version is queried once, not per call */
 	char cvd_version[32];
+	/* lent to the ADSP once and referred to by handle thereafter */
+	struct q6voice_cal *cal;
+	bool cal_tried;
 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
 };
+
+/*
+ * Calibration is per board, and the ADSP has to be lent it before it will
+ * resolve a volume step. Loaded on the first call rather than at probe: the
+ * MVM service has to be up to accept the memory, and it is not when q6voice
+ * is created.
+ */
+#define Q6VOICE_CAL_FIRMWARE	"qcom/q6voice-vol-cal.bin"
 
 /*
  * Downlink volume for a call. Android's HAL maps the user-facing volume onto
@@ -216,6 +228,21 @@ static int q6voice_path_start(struct q6voice_path *p)
 	}
 
 	/*
+	 * The volume step below is resolved through a calibration table, so
+	 * the table has to reach the ADSP first. Absent calibration is not an
+	 * error -- the call proceeds, and only the volume command notices.
+	 */
+	if (!p->v->cal_tried) {
+		p->v->cal_tried = true;
+		p->v->cal = q6voice_cal_load(dev, Q6VOICE_CAL_FIRMWARE);
+	}
+
+	ret = q6voice_cal_register_vol(p->v->cal, cvp);
+	if (ret)
+		dev_warn(dev, "failed to register volume calibration: %d\n",
+			 ret);
+
+	/*
 	 * Volume and mute, before the call runs and in that order, as the
 	 * vendor does. Neither is fatal: the call is still established without
 	 * them, just inaudible, and saying so beats refusing to start.
@@ -378,6 +405,8 @@ static void q6voice_free(void *data)
 		mutex_unlock(&p->lock);
 		mutex_destroy(&p->lock);
 	}
+
+	q6voice_cal_free(v->cal);
 }
 
 struct q6voice *q6voice_create(struct device *dev)
