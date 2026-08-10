@@ -27,6 +27,7 @@ int q6cvp_register_cal(struct q6voice_session *cvp, bool instance,
 		       const void *col_info, u32 col_size);
 int q6cvp_register_dev_cfg(struct q6voice_session *cvp, u32 mem_handle,
 			   phys_addr_t phys, u32 size);
+int q6cvp_set_mfc_config(struct q6voice_session *cvp);
 int q6cvp_deregister_vol_cal(struct q6voice_session *cvp);
 int q6cvp_enable(struct q6voice_session *cvp, bool enable);
 

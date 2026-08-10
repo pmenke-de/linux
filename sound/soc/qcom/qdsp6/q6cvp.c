@@ -17,6 +17,7 @@
 
 #define VSS_IVOCPROC_TOPOLOGY_ID_NONE			0x00010F70
 #define VSS_IVOCPROC_TOPOLOGY_ID_TX_DM_FLUENCE		0x00010F72
+#define VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS_V2		0x00010F89
 
 
 #define VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING		0x00010F7C
@@ -62,6 +63,77 @@ struct vss_icommon_cmd_set_param_channel_info {
 	u64 mem_address;
 	u32 mem_size;
 	struct vss_icommon_param_data_channel_info param_data;
+} __packed;
+
+/*
+ * The vocproc renders in mono whatever the device is, so a stereo render port
+ * needs something in between to fan it out. That is the media format
+ * converter: one command sets up its channel mixer -- one channel in, as many
+ * out as the port carries, at unity gain -- and a second tells it what the
+ * port it is feeding actually looks like. The vendor sends both after
+ * committing the topology, and only when the port has more than one channel.
+ *
+ * Without them a stereo port gets a mono graph with nowhere to put its output.
+ */
+#define AUDPROC_MODULE_ID_MFC				0x00010912
+#define AUDPROC_CHMIXER_PARAM_ID_COEFF			0x00010342
+#define AUDPROC_PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT	0x00010913
+
+/* Unity in the Q14 fixed point the mixer weights use. */
+#define GAIN_Q14_UNITY					(1 << 14)
+
+#define PCM_CHANNEL_L					1
+#define PCM_CHANNEL_R					2
+
+struct vss_param_channel_mixer_info {
+	u32 index;
+	u16 num_output_channels;
+	u16 num_input_channels;
+	u16 out_channel_map[2];
+	u16 in_channel_map[1];
+	u16 channel_weight_coeff[2][1];
+	u16 reserved;
+} __packed;
+
+struct vss_icommon_param_data_ch_mixer {
+	u32 module_id;
+	u32 param_id;
+	u16 param_size;
+	u16 reserved;
+	struct vss_param_channel_mixer_info ch_mixer_info;
+} __packed;
+
+struct vss_icommon_cmd_set_param_ch_mixer {
+	struct apr_hdr hdr;
+	/* zero: the payload is in-band, immediately below */
+	u32 mem_handle;
+	u64 mem_address;
+	u32 mem_size;
+	struct vss_icommon_param_data_ch_mixer param_data;
+} __packed;
+
+struct vss_param_mfc_config_info {
+	u32 sample_rate;
+	u16 bits_per_sample;
+	u16 num_channels;
+	u16 channel_type[VSS_NUM_CHANNELS_MAX];
+} __packed;
+
+struct vss_icommon_param_data_mfc_config {
+	u32 module_id;
+	u32 param_id;
+	u16 param_size;
+	u16 reserved;
+	struct vss_param_mfc_config_info mfc_config_info;
+} __packed;
+
+struct vss_icommon_cmd_set_param_mfc_config {
+	struct apr_hdr hdr;
+	/* zero: the payload is in-band, immediately below */
+	u32 mem_handle;
+	u64 mem_address;
+	u32 mem_size;
+	struct vss_icommon_param_data_mfc_config param_data;
 } __packed;
 
 #define VSS_ICOMMON_CMD_SET_PARAM_V3			0x00013245
@@ -415,6 +487,64 @@ int q6cvp_set_media_format(struct q6voice_session *cvp, u16 tx_port, u16 rx_port
 					  tx_port, tx_rate, tx_channels);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_media_format);
+
+/*
+ * Fan the vocproc's mono render out to however many channels the port takes,
+ * and describe that port to the converter doing it. Only needed when the port
+ * is not mono; see the module ids above.
+ */
+int q6cvp_set_mfc_config(struct q6voice_session *cvp)
+{
+	struct vss_icommon_cmd_set_param_mfc_config mfc = {0};
+	struct vss_icommon_cmd_set_param_ch_mixer mix = {0};
+	unsigned int channels, i;
+	int ret;
+
+	channels = clamp_val(rx_channels, 1, VSS_NUM_CHANNELS_MAX);
+	if (channels < 2)
+		return 0;
+
+	mix.hdr.pkt_size = sizeof(mix);
+	mix.hdr.opcode = VSS_ICOMMON_CMD_SET_PARAM_V2;
+	mix.mem_size = sizeof(mix.param_data);
+
+	mix.param_data.module_id = AUDPROC_MODULE_ID_MFC;
+	mix.param_data.param_id = AUDPROC_CHMIXER_PARAM_ID_COEFF;
+	mix.param_data.param_size = sizeof(mix.param_data.ch_mixer_info);
+
+	mix.param_data.ch_mixer_info.index = 0;
+	mix.param_data.ch_mixer_info.num_output_channels = channels;
+	mix.param_data.ch_mixer_info.num_input_channels = 1;
+	mix.param_data.ch_mixer_info.out_channel_map[0] = PCM_CHANNEL_L;
+	mix.param_data.ch_mixer_info.out_channel_map[1] = PCM_CHANNEL_R;
+	mix.param_data.ch_mixer_info.in_channel_map[0] = PCM_CHANNEL_L;
+	/* The one input channel goes to each output at unity. */
+	mix.param_data.ch_mixer_info.channel_weight_coeff[0][0] = GAIN_Q14_UNITY;
+	mix.param_data.ch_mixer_info.channel_weight_coeff[1][0] = GAIN_Q14_UNITY;
+
+	ret = q6voice_common_send(cvp, &mix.hdr);
+	if (ret)
+		return ret;
+
+	mfc.hdr.pkt_size = sizeof(mfc);
+	mfc.hdr.opcode = VSS_ICOMMON_CMD_SET_PARAM_V2;
+	mfc.mem_size = sizeof(mfc.param_data);
+
+	mfc.param_data.module_id = AUDPROC_MODULE_ID_MFC;
+	mfc.param_data.param_id = AUDPROC_PARAM_ID_MFC_OUTPUT_MEDIA_FORMAT;
+	mfc.param_data.param_size = sizeof(mfc.param_data.mfc_config_info);
+
+	mfc.param_data.mfc_config_info.sample_rate = rx_rate;
+	mfc.param_data.mfc_config_info.bits_per_sample = 16;
+	mfc.param_data.mfc_config_info.num_channels = channels;
+	for (i = 0; i < channels; i++)
+		mfc.param_data.mfc_config_info.channel_type[i] = i + 1;
+
+	pr_info("q6cvp: mfc %u channels out of 1, rate %u\n", channels, rx_rate);
+
+	return q6voice_common_send(cvp, &mfc.hdr);
+}
+EXPORT_SYMBOL_GPL(q6cvp_set_mfc_config);
 
 /*
  * Tell the vocproc its topology is fully described and may be brought up.

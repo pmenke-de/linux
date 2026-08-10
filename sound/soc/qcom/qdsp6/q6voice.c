@@ -285,6 +285,14 @@ static int q6voice_path_start(struct q6voice_path *p)
 		dev_warn(dev, "topology commit failed: %d\n", ret);
 
 	/*
+	 * A render port with more than one channel needs the converter set up
+	 * behind it, and only after the topology is committed.
+	 */
+	ret = q6cvp_set_mfc_config(cvp);
+	if (ret)
+		dev_warn(dev, "media format converter setup failed: %d\n", ret);
+
+	/*
 	 * Calibration goes in while the vocproc is still being described.
 	 * Once it has been enabled and attached it is running, and a running
 	 * vocproc will not take a new table: the command is well formed and
