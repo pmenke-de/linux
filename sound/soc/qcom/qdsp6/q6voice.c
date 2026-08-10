@@ -307,6 +307,9 @@ configured:
 	if (cal_level >= Q6VOICE_CAL_REGISTER) {
 		bool instance = q6voice_cvp_create_v3(p->v->cvd_version);
 
+		if (!p->v->dev_cfg)
+			dev_warn(dev, "no device configuration to register\n");
+
 		ret = q6voice_cal_register_dev_cfg(p->v->dev_cfg, cvp);
 		if (ret)
 			dev_warn(dev, "failed to register device config: %d\n",

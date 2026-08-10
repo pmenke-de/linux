@@ -136,6 +136,17 @@ static void *q6voice_cal_columns(struct device *dev, const void *src,
 	u32 columns;
 	void *out;
 
+	/*
+	 * Not every table is an indexed one. The device configuration has no
+	 * columns because there is nothing to look up in it, and it is the
+	 * table that has to reach the DSP first, so an empty description is
+	 * the normal case rather than a malformed file.
+	 */
+	if (!src_size) {
+		*col_size = 0;
+		return NULL;
+	}
+
 	if (src_size < sizeof(__le32))
 		return NULL;
 
@@ -206,7 +217,7 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 
 	cal->col_info = q6voice_cal_columns(dev, fw->data + sizeof(*hdr),
 					    col_size, &cal->col_size);
-	if (!cal->col_info)
+	if (!cal->col_info && col_size)
 		goto err_free;
 
 	/*

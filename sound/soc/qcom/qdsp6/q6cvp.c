@@ -490,7 +490,8 @@ static int q6cvp_register_table(struct q6voice_session *cvp, u32 opcode,
 	cmd.cal_mem_address_lsw = lower_32_bits(phys);
 	cmd.cal_mem_address_msw = upper_32_bits(phys);
 	cmd.cal_mem_size = size;
-	memcpy(cmd.column_info, col_info, col_size);
+	if (col_size)
+		memcpy(cmd.column_info, col_info, col_size);
 
 	return q6voice_common_send(cvp, &cmd.hdr);
 }
