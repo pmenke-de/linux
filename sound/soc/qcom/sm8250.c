@@ -17,10 +17,13 @@
 #include "sdw.h"
 
 #define MI2S_BCLK_RATE		1536000
-/* Eight 32-bit slots at 48 kHz: 48000 * 8 * 32. */
-#define TDM_BCLK_RATE		12288000
 
 static unsigned int tdm_slot_offset[8] = {0, 4, 8, 12, 16, 20, 24, 28};
+/*
+ * Eight 32-bit slots at 96 kHz: 96000 * 8 * 32, matching the rate a live stock
+ * mixer dump shows on this port (TERT_TDM_RX_0 SampleRate = KHZ_96).
+ */
+#define TDM_BCLK_RATE		24576000
 
 struct sm8250_snd_data {
 	bool stream_prepared[AFE_PORT_MAX];
@@ -68,11 +71,28 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 	int channels, slots, slot_width;
 
 	channels = params_channels(params);
+
+	/*
+	 * Follow the vendor machine driver exactly (kona_tdm_snd_hw_params):
+	 * eight 32-bit slots, and a slot mask covering all of them rather than
+	 * just the two that carry audio. Its tertiary RX_0 entry is
+	 * { {0, 4, 0xFFFF} }, i.e. the two channels sit at byte offsets 0 and 4
+	 * of a 32-bit-slot frame - which is what tdm_slot_offset[] already says.
+	 */
 	slots = 8;
 	slot_width = 32;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0, 0x03, slots, slot_width);
+		/*
+		 * One mask bit per channel actually carried. The vendor driver
+		 * opens every slot in the frame (0xFF for eight), but its port
+		 * config carries a matching channel count; asking the ADSP to
+		 * enable eight slots for a two channel port makes
+		 * AFE_PORT_CMD_DEVICE_START (0x100e5) fail with error 1 and the
+		 * card never appears.
+		 */
+		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0, (1 << channels) - 1,
+					       slots, slot_width);
 		if (ret < 0) {
 			dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
 				__func__, ret);
@@ -98,10 +118,22 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 			int j;
 
 			for_each_rtd_codec_dais(rtd, j, codec_dai) {
-				unsigned int codec_slot[1] = { j };
+				/*
+				 * Both receive slots have to be programmed, the
+				 * way the vendor codec driver does it from
+				 * cirrus,right-channel-amp:
+				 *
+				 *   RX1 = right ? 1 : 0
+				 *   RX2 = right ? 0 : 1
+				 *
+				 * Setting only RX1 leaves RX2 wherever it reset
+				 * to - the same slot on both amplifiers - and
+				 * the part mixes what it finds there.
+				 */
+				unsigned int codec_slot[2] = { j, !j };
 
 				ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
-								  1, codec_slot);
+								  2, codec_slot);
 				if (ret < 0) {
 					dev_err(rtd->dev, "%s: codec channel map err:%d\n",
 						__func__, ret);
@@ -149,20 +181,17 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	switch (cpu_dai->id) {
 	case TERTIARY_TDM_RX_0:
 		/*
-		 * The amplifiers want 24-bit samples, but the frame runs at
-		 * 48 kHz, not 96 kHz: every speaker path in the stock
-		 * mixer_paths.xml sets this port to Two/S24_LE/KHZ_48, and
-		 * nothing there ever selects KHZ_96. 96 kHz appears only in the
-		 * voice-call device config, which the ADSP programs itself
-		 * through q6voice and which never passes through here.
+		 * Two channels of 24-bit at 96 kHz. A live mixer dump taken from
+		 * the stock system has this port - the only RX mixer enabled for
+		 * MultiMedia1 - set to KHZ_96 / S24_LE / Two. mixer_paths.xml
+		 * lists KHZ_48 for its speaker paths, but that is the HAL's
+		 * config file rather than the state the hardware ends up in.
 		 *
-		 * It also has to agree with TDM_BCLK_RATE, since that is the bit
-		 * clock the AFE is asked to generate: eight 32-bit slots at
-		 * 48 kHz is exactly 12.288 MHz. Asking for 96 kHz while the link
-		 * clocks for 48 kHz leaves the amplifiers locked to a frame that
-		 * arrives at half the expected rate - every register reads back
-		 * healthy, PLL lock included, and nothing is audible.
+		 * The rate has to agree with TDM_BCLK_RATE, the bit clock the
+		 * AFE is asked to generate: eight 32-bit slots at 96 kHz is
+		 * exactly 24.576 MHz.
 		 */
+		rate->min = rate->max = 96000;
 		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
 		break;
 	case TX_CODEC_DMA_TX_0:
