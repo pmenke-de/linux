@@ -275,8 +275,6 @@ def main():
             else:
                 blob += struct.pack("<3I", mid, pid, len(payload) + pad)
             blob += payload + b"\0" * pad
-            if len(payload) % 4:
-                blob += b"\0" * (4 - len(payload) % 4)
 
         if args.col_info:
             with open(args.col_info, "rb") as f:
