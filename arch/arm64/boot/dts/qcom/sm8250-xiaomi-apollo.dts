@@ -757,7 +757,13 @@
 		};
 
 		codec {
-			sound-dai = <&cs35l41_speaker 0>, <&cs35l41_rcv 0>;
+			/*
+			 * Order matters: each amplifier is given the TDM slot
+			 * matching its position in this list, so the left
+			 * channel has to come first. The earpiece is the left
+			 * one here, the bottom speaker the right.
+			 */
+			sound-dai = <&cs35l41_rcv 0>, <&cs35l41_speaker 0>;
 		};
 	};
 

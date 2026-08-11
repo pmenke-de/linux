@@ -17,6 +17,7 @@
 #include "sdw.h"
 
 #define MI2S_BCLK_RATE		1536000
+/* Eight 32-bit slots at 48 kHz: 48000 * 8 * 32. */
 #define TDM_BCLK_RATE		12288000
 
 static unsigned int tdm_slot_offset[8] = {0, 4, 8, 12, 16, 20, 24, 28};
@@ -86,6 +87,29 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 			goto end;
 		}
 
+		/*
+		 * Give each amplifier its own slot, the way the MI2S path used
+		 * to: codec 0 takes the left slot, codec 1 the right. Without
+		 * this both parts keep the reset default and read slot 0, so at
+		 * best the two speakers play the same channel.
+		 */
+		if (cpu_dai->id == TERTIARY_TDM_RX_0) {
+			struct snd_soc_dai *codec_dai;
+			int j;
+
+			for_each_rtd_codec_dais(rtd, j, codec_dai) {
+				unsigned int codec_slot[1] = { j };
+
+				ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
+								  1, codec_slot);
+				if (ret < 0) {
+					dev_err(rtd->dev, "%s: codec channel map err:%d\n",
+						__func__, ret);
+					goto end;
+				}
+			}
+		}
+
 		ret = 0;
 	} else {
 		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0xf, 0, slots, slot_width);
@@ -125,12 +149,20 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	switch (cpu_dai->id) {
 	case TERTIARY_TDM_RX_0:
 		/*
-		 * The amplifiers on this board share a TDM frame that runs at
-		 * 96 kHz in 24 bits, which is also where call downlink lands.
-		 * Pinning it to 48 kHz and 16 bits like the rest leaves the
-		 * amplifiers reading the wrong part of each slot.
+		 * The amplifiers want 24-bit samples, but the frame runs at
+		 * 48 kHz, not 96 kHz: every speaker path in the stock
+		 * mixer_paths.xml sets this port to Two/S24_LE/KHZ_48, and
+		 * nothing there ever selects KHZ_96. 96 kHz appears only in the
+		 * voice-call device config, which the ADSP programs itself
+		 * through q6voice and which never passes through here.
+		 *
+		 * It also has to agree with TDM_BCLK_RATE, since that is the bit
+		 * clock the AFE is asked to generate: eight 32-bit slots at
+		 * 48 kHz is exactly 12.288 MHz. Asking for 96 kHz while the link
+		 * clocks for 48 kHz leaves the amplifiers locked to a frame that
+		 * arrives at half the expected rate - every register reads back
+		 * healthy, PLL lock included, and nothing is audible.
 		 */
-		rate->min = rate->max = 96000;
 		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
 		break;
 	case TX_CODEC_DMA_TX_0:
@@ -215,6 +247,15 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
 		break;
 	case TERTIARY_TDM_RX_0:
+		/*
+		 * This port is pinned to 96 kHz (see be_hw_params_fixup) and the
+		 * frame is eight 32-bit slots, so the AFE clocks 24.576 MHz -
+		 * not the 12.288 MHz that a 48 kHz frame would need. Telling the
+		 * amplifiers the wrong reference makes their PLL lock on a clock
+		 * running at twice what they were configured for: every register
+		 * reads back healthy, PLL_LOCK included, and the part emits
+		 * silence.
+		 */
 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_DSP_A;
 		snd_soc_dai_set_sysclk(cpu_dai,
 			Q6AFE_LPASS_CLK_ID_TER_TDM_IBIT,
@@ -222,7 +263,8 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 
 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
 			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
-			snd_soc_dai_set_sysclk(codec_dai, 0, TDM_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+			snd_soc_dai_set_sysclk(codec_dai, 0, TDM_BCLK_RATE,
+					       SNDRV_PCM_STREAM_PLAYBACK);
 			/* CS35L41_CLKID_SCLK=0: configure PLL to lock on BCLK at TDM rate */
 			snd_soc_component_set_sysclk(codec_dai->component,
 						     0, 0, TDM_BCLK_RATE,
