@@ -197,13 +197,26 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	case TX_CODEC_DMA_TX_0:
 	case TX_CODEC_DMA_TX_1:
 	case TX_CODEC_DMA_TX_2:
-	case TX_CODEC_DMA_TX_3:
 		/*
 		 * Qualcomm codec TX backends may be driven in mono or stereo.
-		 * The capture device used for calls on this board is a pair of
-		 * microphones, so leave room for both.
 		 */
 		channels->min = 1;
+		break;
+	case TX_CODEC_DMA_TX_3:
+		/*
+		 * Two channels, always: the top mic carries speech and the
+		 * bottom one is the echo reference, which is how the stock
+		 * system runs this port for a call (0xb037, 48 kHz, two
+		 * channels) and what q6cvp tells the vocproc to expect.
+		 *
+		 * Leaving the minimum at one meant the port followed whichever
+		 * front end opened it first -- PulseAudio keeps a mono source
+		 * open permanently -- so the vocproc was told two channels and
+		 * given one, and the uplink was silent while capture itself
+		 * worked. A capture front end that wants mono still gets it;
+		 * the conversion happens in the DSP.
+		 */
+		channels->min = channels->max = 2;
 		break;
 	case VA_CODEC_DMA_TX_0:
 		/*
