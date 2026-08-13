@@ -409,7 +409,24 @@ static unsigned int rx_channels = 2;
 module_param(rx_channels, uint, 0644);
 MODULE_PARM_DESC(rx_channels, "Channel count of the vocproc's render port.");
 
-static unsigned int tx_channels = 2;
+/*
+ * One channel, because the vocproc has no topology.
+ *
+ * The stock system runs this port with two -- the top mic carries speech and
+ * the bottom one is an echo reference -- but that only makes sense with a
+ * dual-mic processing topology to combine them, and this ADSP will not commit
+ * one: its own 0x1000FFFC needs a custom-topology blob it rejects as
+ * EBADPARAM, and the generic TX_DM_FLUENCE fails TOPOLOGY_COMMIT outright with
+ * EFAILED. With VSS_IVOCPROC_TOPOLOGY_ID_NONE there is no block to merge two
+ * microphones into the single stream the vocoder encodes, and asking for two
+ * leaves the uplink silent.
+ *
+ * The backend still runs both mics; taking one channel takes the first, which
+ * is DEC0 -- AMIC5, the top mic, the speech one. Uplink is therefore
+ * unprocessed: no echo cancellation or noise suppression until the custom
+ * topology can be registered.
+ */
+static unsigned int tx_channels = 1;
 module_param(tx_channels, uint, 0644);
 MODULE_PARM_DESC(tx_channels, "Channel count of the vocproc's capture port.");
 
