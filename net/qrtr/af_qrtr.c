@@ -343,13 +343,19 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 
 	/*
 	 * Debug aid for the apollo call-audio investigation: the audio DSP and
-	 * the external modem are meant to negotiate the voice path as QMI peers
-	 * routed through here. Log only that pair so a call can be watched
-	 * without drowning in ModemManager's polling.
+	 * the external modem negotiate the voice path as peers routed through
+	 * here, so this is the one place both directions of that conversation
+	 * can be seen.
+	 *
+	 * Match on "neither end is us" rather than on node numbers. An earlier
+	 * version hardcoded the DSP as node 2 and printed nothing for weeks --
+	 * the id is assigned in probe order and the DSP is node 5 here. Any
+	 * packet the router forwards between two remote nodes is this pair, and
+	 * nothing else generates it, so there is no need to name them.
 	 */
-	if ((from->sq_node == 2 && to->sq_node == 3) ||
-	    (from->sq_node == 3 && to->sq_node == 2))
-		pr_info_ratelimited("qrtr: dsp<->modem %u:%u -> %u:%u type %d len %zu\n",
+	if (from->sq_node != qrtr_local_nid && to->sq_node != qrtr_local_nid &&
+	    to->sq_node != QRTR_NODE_BCAST)
+		pr_info_ratelimited("qrtr: remote %u:%u -> %u:%u type %d len %zu\n",
 				    from->sq_node, from->sq_port,
 				    to->sq_node, to->sq_port, type, skb->len);
 
