@@ -11,7 +11,13 @@
 
 #define APRV2_IBASIC_CMD_DESTROY_SESSION	0x0001003C
 
-#define TIMEOUT_MS	300
+/*
+ * Long enough for this SoC. Qualcomm's own tree waits 300 ms everywhere except
+ * on sm8250, where the vendor raises it to a second because the ADSP here is
+ * slow to answer; a command that is merely late otherwise comes back as a
+ * timeout and is indistinguishable from one the ADSP refused.
+ */
+#define TIMEOUT_MS	1000
 
 struct q6voice_service {
 	struct apr_device *adev;
