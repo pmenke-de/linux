@@ -313,16 +313,16 @@ static int q6voice_mhi_probe_mhi(struct mhi_device *mhi_dev,
 	 * finds it was never started, and quietly does nothing - which looks
 	 * exactly like a perfect voice session that makes no sound.
 	 */
-	ret = mhi_prepare_for_transfer(mhi_dev);
-	if (ret) {
-		dev_err(ctx->adsp_dev, "failed to start the voice channel: %d\n",
-			ret);
-		mutex_lock(&ctx->lock);
-		ctx->mhi_dev = NULL;
-		q6voice_mhi_unmap_pcie(ctx);
-		mutex_unlock(&ctx->lock);
-		return ret;
-	}
+	/*
+	 * Do not start the channel. Nothing starts AUDIO_VOICE_0 - not the core,
+	 * which leaves offload channels alone, and not the satellite, which is
+	 * only given event ring 4 and its own channels. That is deliberate: the
+	 * vendor driver binds this channel and never prepares it either. Sending
+	 * START_CHAN for a channel whose context nobody ever programmed takes the
+	 * modem down with an ERRFATAL shortly after mission mode.
+	 *
+	 * Binding is only how we get hold of the device to vote it awake.
+	 */
 
 	dev_set_drvdata(&mhi_dev->dev, ctx);
 	return 0;
@@ -346,8 +346,6 @@ static void q6voice_mhi_remove_mhi(struct mhi_device *mhi_dev)
 
 	q6voice_mhi_unmap_pcie(ctx);
 	mutex_unlock(&ctx->lock);
-
-	mhi_unprepare_from_transfer(mhi_dev);
 }
 
 /* The host never queues anything here; the modem DMAs into the mailbox. */

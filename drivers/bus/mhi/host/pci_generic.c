@@ -513,22 +513,23 @@ static const struct mhi_channel_config modem_qcom_sdx55_fusion_channels[] = {
 	MHI_CHANNEL_CONFIG_HW_UL(100, "IP_HW0", 512, 7),
 	MHI_CHANNEL_CONFIG_HW_DL(101, "IP_HW0", 512, 8),
 	/*
-	 * Call audio. The modem DMAs voice frames straight into a mailbox in
-	 * system memory that the ADSP reads, so the host never moves data here.
+	 * Call audio. The modem DMAs voice frames straight into memory the DSP
+	 * shares with it, so the host never moves data here; this is an offload
+	 * channel and the core allocates no ring for it.
 	 *
-	 * It is deliberately *not* an offload channel. The two drivers disagree
-	 * about what that word means: downstream still starts an offloaded
-	 * channel and only leaves the data movement to someone else, while here
-	 * it makes the core skip the channel entirely - no ring, no context, no
-	 * START. Nothing else starts this one either; the satellite is only
-	 * given event ring 4 and its channels. The modem then never sees
-	 * AUDIO_VOICE_0 come up and never starts the voice transport, so the
-	 * mailbox stays empty however perfect the DSP session looks.
+	 * The vendor device tree declares it bi-directional (mhi_chan@80 in
+	 * kona-mhi.dtsi, mhi,chan-dir = 0). Do not copy that: mhi_create_devices()
+	 * only understands DMA_TO_DEVICE and DMA_FROM_DEVICE, and on anything
+	 * else it logs "Direction not supported" and *returns*, so no device is
+	 * created for this channel or for any channel numbered above it - which
+	 * takes the data path down with it.
 	 *
-	 * So let the core own it and have q6voice-mhi start it; we simply never
-	 * queue a buffer on it.
+	 * Nothing starts this channel by itself: the core never starts offload
+	 * channels, and the satellite is only given event ring 4 and its own
+	 * channels. q6voice-mhi calls mhi_prepare_for_transfer(), which for an
+	 * offload channel sends START_CHAN and allocates nothing.
 	 */
-	MHI_CHANNEL_CONFIG_UL(80, "AUDIO_VOICE_0", 64, 2),
+	MHI_CHANNEL_CONFIG_OFFLOAD_UL(80, "AUDIO_VOICE_0", 64, 0),
 	/*
 	 * Channels lent to the audio DSP so it can drive the modem itself:
 	 * it supplies the ring contexts and rings the doorbells, we only
