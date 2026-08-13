@@ -290,21 +290,29 @@ static int q6voice_path_start(struct q6voice_path *p)
 		    rx_topology == VSS_IVOCPROC_TOPOLOGY_ID_NONE)
 			goto topology_ready;
 
+		/*
+		 * Only the vendor's own topologies live in this blob. Failing to
+		 * register it must not take the call down: the stock topology
+		 * ids need it, but Qualcomm's generic ones do not, and refusing
+		 * to start left no way to try them. Warn and carry on -- if the
+		 * chosen topology really did need the blob, the vocproc create
+		 * that follows says so.
+		 */
 		ret = q6core_register_custom_topologies(
 			Q6VOICE_CUSTOM_TOPOLOGY_FIRMWARE);
-		if (ret) {
-			dev_err(dev, "custom topology registration failed: %d\n", ret);
-			goto stream_err;
-		}
+		if (ret)
+			dev_warn(dev, "custom topology registration failed: %d\n",
+				 ret);
 
 		dev_info(dev, "preload CVD topology modules tx %#010x rx %#010x\n",
 			 tx_topology, rx_topology);
 		ret = q6core_load_topo_modules(rx_topology);
 		if (ret)
-			goto stream_err;
+			dev_warn(dev, "rx topology preload failed: %d\n", ret);
 		ret = q6core_load_topo_modules(tx_topology);
 		if (ret)
-			goto stream_err;
+			dev_warn(dev, "tx topology preload failed: %d\n", ret);
+		ret = 0;
 	}
 topology_ready:
 
