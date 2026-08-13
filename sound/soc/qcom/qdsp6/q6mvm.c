@@ -14,6 +14,14 @@
 #define CVD_VERSION_STRING_MAX_SIZE			31
 
 #define VSS_IPKTEXG_CMD_SET_MAILBOX_MEMORY_CONFIG	0x0001333B
+/*
+ * The modem's own request for the same configuration, and the reply that
+ * carries it. The ADSP keeps one copy in a single global, answers this from it
+ * whoever asks, and replies with a plain error when nothing has been stored --
+ * so asking it ourselves is a direct read of the state the modem sees.
+ */
+#define VSS_IPKTEXG_CMD_REQUEST_MAILBOX_MEMORY_CONFIG	0x0001333C
+#define VSS_IPKTEXG_RSP_MAILBOX_MEMORY_CONFIG		0x0001333D
 
 /*
  * Tell the ADSP where the shared voice mailbox lives. On boards where the modem
@@ -23,6 +31,13 @@
  */
 struct vss_ipktexg_cmd_set_mailbox_memory_config {
 	struct apr_hdr hdr;
+	u64 mailbox_mem_address_adsp;
+	u64 mailbox_mem_address_pcie;
+	u32 mem_size;
+} __packed;
+
+/* The same three values coming back, without a header of their own. */
+struct vss_ipktexg_rsp_mailbox_memory_config {
 	u64 mailbox_mem_address_adsp;
 	u64 mailbox_mem_address_pcie;
 	u32 mem_size;
@@ -271,6 +286,39 @@ int q6mvm_set_mailbox_memory(u64 adsp_iova, u64 pcie_iova, u32 size)
 				       sizeof(cmd));
 }
 EXPORT_SYMBOL_GPL(q6mvm_set_mailbox_memory);
+
+/*
+ * Read back the mailbox configuration the ADSP is holding.
+ *
+ * This is the request the modem itself makes while setting up a call, and it is
+ * answered out of the same single global the command above writes. Sending it
+ * from here therefore answers the one question the AP cannot otherwise settle:
+ * whether the values the ADSP will hand the modem are the ones we sent. A
+ * command that was acknowledged tells us the packet was well formed; only this
+ * tells us it was kept.
+ */
+int q6mvm_get_mailbox_memory(u64 *adsp_iova, u64 *pcie_iova, u32 *size)
+{
+	struct vss_ipktexg_rsp_mailbox_memory_config rsp = {0};
+	struct apr_hdr hdr = {0};
+	int ret;
+
+	hdr.opcode = VSS_IPKTEXG_CMD_REQUEST_MAILBOX_MEMORY_CONFIG;
+
+	ret = q6voice_common_send_svc_rsp(Q6VOICE_SERVICE_MVM, &hdr,
+					  sizeof(hdr),
+					  VSS_IPKTEXG_RSP_MAILBOX_MEMORY_CONFIG,
+					  &rsp, sizeof(rsp));
+	if (ret)
+		return ret;
+
+	*adsp_iova = rsp.mailbox_mem_address_adsp;
+	*pcie_iova = rsp.mailbox_mem_address_pcie;
+	*size = rsp.mem_size;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(q6mvm_get_mailbox_memory);
 
 /*
  * Hand @table_addr (a table describing the blocks being lent) to the ADSP and

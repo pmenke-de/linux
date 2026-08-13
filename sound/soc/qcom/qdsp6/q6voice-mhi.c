@@ -95,6 +95,45 @@ static int q6voice_mhi_mailbox_show(struct seq_file *s, void *unused)
 DEFINE_SHOW_ATTRIBUTE(q6voice_mhi_mailbox);
 
 /*
+ * What the ADSP will tell the modem when it asks.
+ *
+ * The modem's call setup stalls in its MEMORY_MAP action, which is where it
+ * asks the ADSP for this configuration. The ADSP keeps exactly one copy of it,
+ * in a global set by our command and read back by the modem's, and answers with
+ * an error if nothing was ever stored. Our command is acknowledged, but an
+ * acknowledgement only says the packet was well formed -- the ADSP replies to a
+ * malformed one as well, having dropped it. Asking the same question the modem
+ * asks is the only way to see which happened.
+ *
+ * Anything other than the three values printed above the line means the AP and
+ * the modem disagree about where the mailbox is, and the call has no chance.
+ */
+static int q6voice_mhi_config_show(struct seq_file *s, void *unused)
+{
+	struct q6voice_mhi *ctx = s->private;
+	u64 adsp = 0, pcie = 0;
+	u32 size = 0;
+	int ret;
+
+	seq_printf(s, "sent adsp:  %#llx\n",
+		   q6voice_dsp_address(ctx->adsp_dev, ctx->iova_adsp));
+	seq_printf(s, "sent pcie:  %#llx\n", (u64)ctx->iova_pcie);
+	seq_printf(s, "sent size:  %#x\n", VOICE_MAILBOX_SIZE);
+
+	ret = q6mvm_get_mailbox_memory(&adsp, &pcie, &size);
+	if (ret) {
+		seq_printf(s, "held:       ADSP refused the query (%d)\n", ret);
+		return 0;
+	}
+
+	seq_printf(s, "held adsp:  %#llx\n", adsp);
+	seq_printf(s, "held pcie:  %#llx\n", pcie);
+	seq_printf(s, "held size:  %#x\n", size);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(q6voice_mhi_config);
+
+/*
  * The platform device and the MHI device show up independently and in no fixed
  * order, so the two halves rendezvous through this.
  */
@@ -205,6 +244,8 @@ static void q6voice_mhi_unmap_pcie(struct q6voice_mhi *ctx)
  */
 static int q6voice_mhi_configure(struct q6voice_mhi *ctx)
 {
+	u64 adsp, pcie, held_adsp = 0, held_pcie = 0;
+	u32 held_size = 0;
 	int ret;
 
 	if (ctx->configured || !ctx->iova_pcie)
@@ -215,10 +256,10 @@ static int q6voice_mhi_configure(struct q6voice_mhi *ctx)
 	 * the address in the form that says which stream to use. The PCIe
 	 * address is the modem's and is left alone.
 	 */
-	ret = q6mvm_set_mailbox_memory(q6voice_dsp_address(ctx->adsp_dev,
-							   ctx->iova_adsp),
-				       ctx->iova_pcie,
-				       VOICE_MAILBOX_SIZE);
+	adsp = q6voice_dsp_address(ctx->adsp_dev, ctx->iova_adsp);
+	pcie = ctx->iova_pcie;
+
+	ret = q6mvm_set_mailbox_memory(adsp, pcie, VOICE_MAILBOX_SIZE);
 	if (ret) {
 		/*
 		 * Not fatal, and worth retrying: the ADSP refuses this while it
@@ -227,6 +268,26 @@ static int q6voice_mhi_configure(struct q6voice_mhi *ctx)
 		 */
 		dev_warn(ctx->adsp_dev, "mailbox not configured yet: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * Ask for it back rather than trusting the acknowledgement.
+	 *
+	 * The ADSP answers a command whose payload is the wrong length with an
+	 * error status and then drops it, so an acknowledgement on its own does
+	 * not mean anything was kept -- and what it kept is precisely what it
+	 * will hand the modem when the modem asks. Reading it back closes that
+	 * gap for the cost of one more round trip per call.
+	 */
+	ret = q6mvm_get_mailbox_memory(&held_adsp, &held_pcie, &held_size);
+	if (ret) {
+		dev_warn(ctx->adsp_dev,
+			 "mailbox accepted but cannot be read back: %d\n", ret);
+	} else if (held_adsp != adsp || held_pcie != pcie ||
+		   held_size != VOICE_MAILBOX_SIZE) {
+		dev_warn(ctx->adsp_dev,
+			 "ADSP holds a different mailbox: adsp %#llx pcie %#llx size %#x\n",
+			 held_adsp, held_pcie, held_size);
 	}
 
 	ctx->configured = true;
@@ -467,6 +528,8 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 	ctx->debugfs = debugfs_create_dir("q6voice-mhi", NULL);
 	debugfs_create_file("mailbox", 0444, ctx->debugfs, ctx,
 			    &q6voice_mhi_mailbox_fops);
+	debugfs_create_file("config", 0444, ctx->debugfs, ctx,
+			    &q6voice_mhi_config_fops);
 
 	q6voice_set_modem_link(&q6voice_mhi_link);
 	q6voice_common_set_svc_notifier(q6voice_mhi_svc_up);
