@@ -50,6 +50,7 @@ struct q6voice_mhi {
 	void *buf;
 	phys_addr_t phys;
 	dma_addr_t iova_adsp;
+	dma_addr_t iova_guard;
 	dma_addr_t iova_pcie;
 
 	struct dentry *debugfs;
@@ -434,6 +435,23 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(ctx->buf),
 				     "failed to map mailbox for the CPU\n");
 	memset(ctx->buf, 0, VOICE_MAILBOX_SIZE);
+
+	/*
+	 * Keep the mailbox away from the top of the address space.
+	 *
+	 * The address handed to the ADSP carries the SMMU stream id in bits 32
+	 * and up, so a mapping that ends exactly at 4 GiB has an end address
+	 * that carries into those bits and describes a different stream. The
+	 * allocator hands out the highest free address first, which is exactly
+	 * where the mailbox landed: 0xfffe0000 for 128 KiB, ending on the
+	 * boundary. Take that top slot with a throwaway mapping first so the
+	 * mailbox gets somewhere the arithmetic still works, the way the
+	 * calibration buffers - which are mapped later and do work - already do.
+	 */
+	ctx->iova_guard = dma_map_resource(dev, ctx->phys, PAGE_SIZE,
+					   DMA_BIDIRECTIONAL, 0);
+	if (dma_mapping_error(dev, ctx->iova_guard))
+		ctx->iova_guard = 0;
 
 	/* This device carries the ADSP stream ID, so this is the ADSP's view */
 	ctx->iova_adsp = dma_map_resource(dev, ctx->phys, VOICE_MAILBOX_SIZE,
