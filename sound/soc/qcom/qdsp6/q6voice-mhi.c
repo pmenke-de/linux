@@ -125,9 +125,22 @@ static int q6voice_mhi_start(void)
 	mutex_lock(&ctx->lock);
 
 	/*
-	 * Last chance to describe the mailbox before it is needed. By now the
-	 * ADSP has been up long enough to listen, which is not true at probe.
+	 * Describe the mailbox again for every call, not just the first.
+	 *
+	 * The modem's own voice service configures itself in the order
+	 * ATTACH_CVS, SET_NETWORK_ON_MVM, SET_CACHED_STREAM_PROPERTIES,
+	 * MEMORY_MAP, and it is MEMORY_MAP that hangs: its DIAG F3 log shows the
+	 * state machine waiting there for about thirteen seconds, giving up, and
+	 * destroying the session without ever reaching START_VOICE. The ADSP is
+	 * what answers that request, and the only thing it has to answer it with
+	 * is this mailbox - which it was last told about at boot, before any
+	 * session existed.
+	 *
+	 * Re-announcing costs one command per call and carries the same values,
+	 * which is what the vendor driver ends up doing whenever the ADSP or the
+	 * PCIe link comes back.
 	 */
+	ctx->configured = false;
 	q6voice_mhi_configure(ctx);
 
 	/* No modem bound means no link to hold up; let the call proceed. */
