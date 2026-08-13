@@ -204,8 +204,13 @@ static const char * const sat_state_str[SAT_STATE_MAX] = {
  * debug -- and a request the host refuses is answered with an error code the
  * remote accepts without complaint, so a rejected channel and a granted one
  * look the same from the outside. Recording it is the only way to tell.
+ *
+ * Deep enough that the boot exchange is still there after a call has run: the
+ * two are read together, since what matters is whether the remote asked for
+ * anything new while the call was being set up, and boot is the baseline it is
+ * compared against.
  */
-#define MHI_SAT_LOG_ENTRIES	64
+#define MHI_SAT_LOG_ENTRIES	256
 
 struct mhi_sat_log_entry {
 	u64 ts;
