@@ -53,14 +53,26 @@ struct q6voice_session {
  * and no audio ever flows.
  *
  * Targets from about MSM8998 onwards, this one included, run MultiMode voice,
- * where the first subscription is "VoiceMMode1" (VSID 0x11C05000). The older
+ * where the first subscription is VSID 0x11C05000. The older
  * "default modem voice" only matches pre-MultiMode modems.
+ *
+ * The name for a MultiMode session is the VSID itself, written as eight
+ * uppercase hex digits -- not a descriptive word. Qualcomm names the older
+ * fixed sessions ("default modem voice", "default volte voice") but switches to
+ * VOICEMMODE1_VSID_STR "11C05000" for these, and the modem's voice agent refers
+ * to the same session as VSID 0x11C05000. A descriptive name here is accepted
+ * by the ADSP and creates a session of its own, which the modem then never
+ * finds: its own session is created under the VSID name, the ADSP holds two
+ * unrelated sessions, and because it only announces VSS_IMVM_EVT_APPS_START
+ * once both an apps-side and a modem-side client have joined *the same* one, it
+ * never announces anything. The modem waits, times out, tears the session down
+ * and tries again, while every command on our side reports success.
  */
 static inline const char *q6voice_session_name(enum q6voice_path_type path)
 {
 	switch (path) {
 	case Q6VOICE_PATH_VOICE:
-		return "VoiceMMode1";
+		return "11C05000";
 	default:
 		return NULL;
 	}
