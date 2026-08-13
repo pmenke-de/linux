@@ -500,6 +500,24 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 				break;
 			}
 
+			/*
+			 * A context update for a channel we still believe is
+			 * running means the remote has started over without
+			 * telling us: it re-maps its buffers and pushes fresh
+			 * ring addresses, but never sends RESET_CHAN first, so
+			 * nothing here clears chan_started. Left alone, the
+			 * START that follows is refused, and the channel we
+			 * kept instead points at rings the remote has already
+			 * abandoned -- the link stays down until the next
+			 * reboot. Tear it down so the start can succeed.
+			 */
+			if (evt == SAT_CTXT_TYPE_CHAN && sat_dev->chan_started) {
+				dev_info(dev, "sat: chan %d restarted by %s\n",
+					 id, sat_cntrl->subsys->name);
+				mhi_unprepare_from_transfer(sat_dev->mhi_dev);
+				sat_dev->chan_started = false;
+			}
+
 			gen_ctxt.type = MHI_CTXT_TYPE_GENERIC;
 			gen_ctxt.ctxt_base = MHI_TRE_GET_PTR(pkt);
 			gen_ctxt.ctxt_size = MHI_TRE_GET_SIZE(pkt);
