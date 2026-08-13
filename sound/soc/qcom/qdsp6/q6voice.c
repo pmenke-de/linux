@@ -174,6 +174,27 @@ module_param(setup_level, int, 0644);
 MODULE_PARM_DESC(setup_level,
 		 "0 = full setup, 1 = skip vocproc config, 2 = msm8916 minimal");
 
+/*
+ * Whether we attach the stream to the MVM ourselves.
+ *
+ * The ADSP merges control sessions by name, so the passive session we create
+ * and the full-control one the modem creates for the same VSID are one object
+ * reached through two handles -- our CVS and the modem's come back with the
+ * same handle, 0x0100. Only one attach can succeed. Ours always gets there
+ * first, because we build the session when the PCM opens while the modem only
+ * starts once the ADSP has sent it APPS_START, which our create is what
+ * triggers. The modem's attach then fails ADSP_EALREADY (status 9, visible in
+ * its APR log) and it answers that by destroying the session and starting over,
+ * indefinitely.
+ *
+ * The modem owns the call, so the attach belongs to it. Off by default; set to
+ * 1 to restore the old behaviour.
+ */
+static bool attach_stream;
+module_param(attach_stream, bool, 0644);
+MODULE_PARM_DESC(attach_stream,
+		 "Attach the stream to the MVM from here instead of leaving it to the modem.");
+
 static int q6voice_path_start(struct q6voice_path *p)
 {
 	struct device *dev = p->v->dev;
@@ -222,10 +243,30 @@ static int q6voice_path_start(struct q6voice_path *p)
 			p->runtime->sessions[Q6VOICE_SERVICE_CVS] = cvs;
 		}
 
-		ret = q6mvm_attach_stream(mvm, cvs, true);
-		if (ret) {
-			dev_err(dev, "failed to attach stream to mvm: %d\n", ret);
-			goto link_err;
+		/*
+		 * Let the modem attach the stream, not us.
+		 *
+		 * The ADSP merges sessions by name, so the passive session we
+		 * create and the full-control one the modem creates for the
+		 * same VSID are one object with two handles -- our CVS and the
+		 * modem's come back with the same handle. Only one attach can
+		 * win. We always get there first, because our session is built
+		 * when the PCM opens and the modem only starts once the ADSP
+		 * has told it APPS_START, which needs our create to have
+		 * happened. The modem's attach then fails with ADSP_EALREADY
+		 * (status 9, seen in its APR log) and it responds by destroying
+		 * the session and starting over, forever.
+		 *
+		 * The modem owns the call, so the attach is its to make. Ours
+		 * is redundant on a merged session and is what starves it.
+		 */
+		if (attach_stream) {
+			ret = q6mvm_attach_stream(mvm, cvs, true);
+			if (ret) {
+				dev_err(dev, "failed to attach stream to mvm: %d\n",
+					ret);
+				goto link_err;
+			}
 		}
 	}
 
@@ -436,8 +477,10 @@ attach_err:
 cvp_err:
 	q6cvp_enable(cvp, false);
 stream_err:
-	/* There is no stream to detach when the setup level left it out. */
-	if (cvs)
+	/* Nothing to detach if the setup level left it out, or if the attach
+	 * was left to the modem -- detaching then would tear down its attach.
+	 */
+	if (cvs && attach_stream)
 		q6mvm_attach_stream(mvm, cvs, false);
 link_err:
 	q6voice_modem_link_end();
@@ -504,7 +547,8 @@ static void q6voice_path_stop(struct q6voice_path *p)
 	if (ret)
 		dev_err(dev, "failed to disable cvp: %d\n", ret);
 
-	if (cvs) {
+	/* Only undo an attach we made ourselves; see attach_stream above. */
+	if (cvs && attach_stream) {
 		ret = q6mvm_attach_stream(mvm, cvs, false);
 		if (ret)
 			dev_err(dev, "failed to detach stream from mvm: %d\n", ret);
