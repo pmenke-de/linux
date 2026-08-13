@@ -4,6 +4,9 @@
 
 #include <linux/slab.h>
 #include <linux/wait.h>
+#include <linux/dma-mapping.h>
+#include <linux/mm.h>
+#include <linux/firmware.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/sched.h>
@@ -13,9 +16,11 @@
 #include <linux/soc/qcom/apr.h>
 #include "q6core.h"
 #include "q6dsp-errno.h"
+#include "q6voice-common.h"
 
 #define ADSP_STATE_READY_TIMEOUT_MS    3000
 #define Q6_READY_TIMEOUT_MS 100
+#define Q6_TOPOLOGY_TIMEOUT_MS 1000
 #define AVCS_CMD_ADSP_EVENT_GET_STATE		0x0001290C
 #define AVCS_CMDRSP_ADSP_EVENT_GET_STATE	0x0001290D
 #define AVCS_GET_VERSIONS       0x00012905
@@ -23,6 +28,35 @@
 #define AVCS_GET_VERSIONS_RSP   0x00012906
 #define AVCS_CMD_GET_FWK_VERSION	0x001292c
 #define AVCS_CMDRSP_GET_FWK_VERSION	0x001292d
+#define AVCS_CMD_REGISTER_TOPOLOGIES		0x00012923
+#define AVCS_CMD_SHARED_MEM_MAP_REGIONS	0x00012924
+#define AVCS_CMDRSP_SHARED_MEM_MAP_REGIONS	0x00012925
+#define AVCS_CMD_SHARED_MEM_UNMAP_REGIONS	0x00012926
+
+#define ADSP_MEMORY_MAP_SHMEM8_4K_POOL	3
+
+struct avcs_cmd_shared_mem_map_regions {
+	struct apr_hdr hdr;
+	u16 mem_pool_id;
+	u16 num_regions;
+	u32 property_flag;
+	u32 shm_addr_lsw;
+	u32 shm_addr_msw;
+	u32 mem_size_bytes;
+} __packed;
+
+struct avcs_cmd_register_topologies {
+	struct apr_hdr hdr;
+	u32 payload_addr_lsw;
+	u32 payload_addr_msw;
+	u32 mem_map_handle;
+	u32 payload_size;
+} __packed;
+
+struct avcs_cmd_shared_mem_unmap_regions {
+	struct apr_hdr hdr;
+	u32 mem_map_handle;
+} __packed;
 
 struct avcs_svc_info {
 	uint32_t service_id;
@@ -58,6 +92,9 @@ struct q6core {
 	struct mutex lock;
 	bool resp_received;
 	u32 cmd_status;
+	u32 mem_map_handle;
+	bool custom_topologies_registered;
+	bool custom_topologies_failed;
 	uint32_t num_services;
 	struct avcs_cmdrsp_get_fwk_version *fwk_version;
 	struct avcs_cmdrsp_get_version *svc_version;
@@ -99,6 +136,12 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
 			core->cmd_status = result->status;
 			core->resp_received = true;
 			break;
+		case AVCS_CMD_SHARED_MEM_MAP_REGIONS:
+		case AVCS_CMD_SHARED_MEM_UNMAP_REGIONS:
+		case AVCS_CMD_REGISTER_TOPOLOGIES:
+			core->cmd_status = result->status;
+			core->resp_received = true;
+			break;
 		}
 		break;
 	}
@@ -136,6 +179,16 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
 
 		break;
 	}
+	case AVCS_CMDRSP_SHARED_MEM_MAP_REGIONS:
+		if (data->payload_size < sizeof(u32)) {
+			dev_err(&adev->dev, "short shared-memory map response\n");
+			return -EINVAL;
+		}
+
+		core->mem_map_handle = *(const u32 *)data->payload;
+		core->cmd_status = 0;
+		core->resp_received = true;
+		break;
 	case AVCS_CMDRSP_ADSP_EVENT_GET_STATE:
 		core->get_state_supported = true;
 		core->avcs_state = result->opcode;
@@ -242,6 +295,199 @@ static bool __q6core_is_adsp_ready(struct q6core *core)
 	return false;
 }
 
+static int q6core_wait_for_response(struct q6core *core, const char *command,
+				    unsigned int timeout_ms)
+{
+	int ret;
+
+	ret = wait_event_timeout(core->wait, core->resp_received,
+				 msecs_to_jiffies(timeout_ms));
+	if (ret <= 0 || !core->resp_received) {
+		dev_err(&core->adev->dev, "%s timed out\n", command);
+		return -ETIMEDOUT;
+	}
+
+	core->resp_received = false;
+	if (core->cmd_status) {
+		dev_err(&core->adev->dev, "%s rejected: %#x\n", command,
+			core->cmd_status);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int q6core_send_and_wait_topology(struct q6core *core,
+					 struct apr_pkt *pkt,
+					 const char *command)
+{
+	int ret;
+
+	core->cmd_status = 0;
+	core->resp_received = false;
+	ret = apr_send_pkt(core->adev, pkt);
+	if (ret < 0)
+		return ret;
+
+	return q6core_wait_for_response(core, command, Q6_TOPOLOGY_TIMEOUT_MS);
+}
+
+/**
+ * q6core_register_custom_topologies() - Register a board's AVCS topology blob
+ * @firmware_name: firmware file containing the raw AVCS topology payload
+ *
+ * Qualcomm's Android calibration stack sends this payload through
+ * CORE_CUSTOM_TOPOLOGIES_CAL_TYPE before it asks CVD to load OEM topology
+ * IDs. Mainline has no audio-calibration ioctl, so register the exact blob
+ * directly with AVCS. After AVCS acknowledges REGISTER_TOPOLOGIES, the shared
+ * buffer is unmapped and freed.
+ */
+int q6core_register_custom_topologies(const char *firmware_name)
+{
+	struct avcs_cmd_shared_mem_map_regions map = { 0 };
+	struct avcs_cmd_register_topologies register_topologies = { 0 };
+	struct avcs_cmd_shared_mem_unmap_regions unmap = { 0 };
+	const struct firmware *fw;
+	void *buffer;
+	dma_addr_t iova;
+	u64 dsp_addr;
+	u32 payload_size, map_handle = 0;
+	bool keep_buffer = false;
+	int ret, unmap_ret;
+
+	if (!g_core || !firmware_name)
+		return -ENODEV;
+
+	ret = request_firmware(&fw, firmware_name, &g_core->adev->dev);
+	if (ret) {
+		dev_err(&g_core->adev->dev, "request %s failed: %d\n",
+			firmware_name, ret);
+		return ret;
+	}
+	if (!fw->size || fw->size > PAGE_SIZE) {
+		dev_err(&g_core->adev->dev, "invalid topology firmware size %zu\n",
+			fw->size);
+		ret = -EINVAL;
+		goto release_firmware;
+	}
+
+	payload_size = fw->size;
+	/*
+	 * Android gives AVCS an IOVA in audio SID 1, not a CPU physical
+	 * address. A bare physical address can alias unrelated hardware in the
+	 * ADSP's address space.
+	 */
+	buffer = dma_alloc_coherent(&g_core->adev->dev, PAGE_SIZE, &iova,
+				    GFP_KERNEL);
+	if (!buffer) {
+		ret = -ENOMEM;
+		goto release_firmware;
+	}
+	memset(buffer, 0, PAGE_SIZE);
+	memcpy(buffer, fw->data, payload_size);
+	dsp_addr = q6voice_dsp_address(&g_core->adev->dev, iova);
+	release_firmware(fw);
+
+	mutex_lock(&g_core->lock);
+	if (g_core->custom_topologies_registered) {
+		ret = 0;
+		goto free_buffer;
+	}
+	if (g_core->custom_topologies_failed) {
+		ret = -EIO;
+		goto free_buffer;
+	}
+
+	dev_info(&g_core->adev->dev,
+		 "custom topology buffer iova %#llx, dsp address %#llx, size %u\n",
+		 (u64)iova, dsp_addr, payload_size);
+
+	map.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					 APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	map.hdr.pkt_size = sizeof(map);
+	map.hdr.opcode = AVCS_CMD_SHARED_MEM_MAP_REGIONS;
+	map.mem_pool_id = ADSP_MEMORY_MAP_SHMEM8_4K_POOL;
+	map.num_regions = 1;
+	map.shm_addr_lsw = lower_32_bits(dsp_addr);
+	map.shm_addr_msw = upper_32_bits(dsp_addr);
+	map.mem_size_bytes = PAGE_SIZE;
+	g_core->mem_map_handle = 0;
+
+	ret = q6core_send_and_wait_topology(g_core, (struct apr_pkt *)&map,
+					 "map custom topologies");
+	if (ret) {
+		if (ret == -ETIMEDOUT) {
+			g_core->custom_topologies_failed = true;
+			keep_buffer = true;
+		}
+		goto free_buffer;
+	}
+	map_handle = g_core->mem_map_handle;
+	if (!map_handle) {
+		dev_err(&g_core->adev->dev,
+			"map custom topologies returned no handle\n");
+		g_core->custom_topologies_failed = true;
+		keep_buffer = true;
+		ret = -EIO;
+		goto free_buffer;
+	}
+
+	register_topologies.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+						 APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	register_topologies.hdr.pkt_size = sizeof(register_topologies);
+	register_topologies.hdr.opcode = AVCS_CMD_REGISTER_TOPOLOGIES;
+	register_topologies.payload_addr_lsw = lower_32_bits(dsp_addr);
+	register_topologies.payload_addr_msw = upper_32_bits(dsp_addr);
+	register_topologies.mem_map_handle = map_handle;
+	register_topologies.payload_size = payload_size;
+
+	ret = q6core_send_and_wait_topology(g_core,
+					 (struct apr_pkt *)&register_topologies,
+					 "register custom topologies");
+	if (ret == -ETIMEDOUT) {
+		g_core->custom_topologies_failed = true;
+		keep_buffer = true;
+		goto free_buffer;
+	}
+	if (ret)
+		goto unmap_buffer;
+	g_core->custom_topologies_registered = true;
+unmap_buffer:
+
+	unmap.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	unmap.hdr.pkt_size = sizeof(unmap);
+	unmap.hdr.opcode = AVCS_CMD_SHARED_MEM_UNMAP_REGIONS;
+	unmap.mem_map_handle = map_handle;
+	unmap_ret = q6core_send_and_wait_topology(g_core,
+					       (struct apr_pkt *)&unmap,
+					       "unmap custom topologies");
+	if (unmap_ret) {
+		g_core->custom_topologies_failed = true;
+		keep_buffer = true;
+	}
+	if (!ret && unmap_ret)
+		ret = unmap_ret;
+
+	if (!ret)
+		dev_info(&g_core->adev->dev,
+			 "registered %u bytes of custom topologies from %s\n",
+			 payload_size, firmware_name);
+free_buffer:
+	mutex_unlock(&g_core->lock);
+	if (keep_buffer)
+		dev_err(&g_core->adev->dev,
+			"retaining custom topology DMA page after uncertain DSP state\n");
+	else
+		dma_free_coherent(&g_core->adev->dev, PAGE_SIZE, buffer, iova);
+	return ret;
+
+release_firmware:
+	release_firmware(fw);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(q6core_register_custom_topologies);
+
 /**
  * q6core_get_svc_api_info() - Get version number of a service.
  *
@@ -274,6 +520,8 @@ int q6core_load_topo_modules(u32 topology_id)
 	pkt.topology_id = topology_id;
 
 	mutex_lock(&g_core->lock);
+	g_core->cmd_status = 0;
+	g_core->resp_received = false;
 	rc = apr_send_pkt(g_core->adev, (struct apr_pkt *)&pkt);
 	if (rc < 0)
 		goto out;

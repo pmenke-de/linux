@@ -514,11 +514,21 @@ static const struct mhi_channel_config modem_qcom_sdx55_fusion_channels[] = {
 	MHI_CHANNEL_CONFIG_HW_DL(101, "IP_HW0", 512, 8),
 	/*
 	 * Call audio. The modem DMAs voice frames straight into a mailbox in
-	 * system memory that the ADSP reads, so the host never moves data here
-	 * -- this only has to exist so the channel is set up and a driver can
-	 * bind to it. See sound/soc/qcom/qdsp6/q6voice-mhi.c.
+	 * system memory that the ADSP reads, so the host never moves data here.
+	 *
+	 * It is deliberately *not* an offload channel. The two drivers disagree
+	 * about what that word means: downstream still starts an offloaded
+	 * channel and only leaves the data movement to someone else, while here
+	 * it makes the core skip the channel entirely - no ring, no context, no
+	 * START. Nothing else starts this one either; the satellite is only
+	 * given event ring 4 and its channels. The modem then never sees
+	 * AUDIO_VOICE_0 come up and never starts the voice transport, so the
+	 * mailbox stays empty however perfect the DSP session looks.
+	 *
+	 * So let the core own it and have q6voice-mhi start it; we simply never
+	 * queue a buffer on it.
 	 */
-	MHI_CHANNEL_CONFIG_OFFLOAD_UL(80, "AUDIO_VOICE_0", 64, 0),
+	MHI_CHANNEL_CONFIG_UL(80, "AUDIO_VOICE_0", 64, 2),
 	/*
 	 * Channels lent to the audio DSP so it can drive the modem itself:
 	 * it supplies the ring contexts and rings the doorbells, we only

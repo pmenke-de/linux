@@ -15,7 +15,6 @@
 
 #define VSS_IVOCPROC_PORT_ID_NONE	0xFFFF
 
-#define VSS_IVOCPROC_TOPOLOGY_ID_NONE			0x00010F70
 #define VSS_IVOCPROC_TOPOLOGY_ID_TX_DM_FLUENCE		0x00010F72
 #define VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS_V2		0x00010F89
 
@@ -320,6 +319,34 @@ module_param(bypass_topology, bool, 0644);
 MODULE_PARM_DESC(bypass_topology,
 		 "Create the vocproc with no processing topology (default), rather than the echo-cancelling one, which needs calibration this driver cannot supply yet.");
 
+/*
+ * OEM CVD firmware can provide different processing topology IDs from the
+ * generic SM-ECNS / RX-default pair.  Keep the generic defaults for
+ * existing boards, but let a board-specific boot service supply the IDs
+ * captured from its stock voice stack before the first call.
+ */
+static unsigned int tx_topology = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
+module_param(tx_topology, uint, 0644);
+MODULE_PARM_DESC(tx_topology,
+		 "CVP transmit processing topology when bypass_topology is disabled.");
+
+static unsigned int rx_topology = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
+module_param(rx_topology, uint, 0644);
+MODULE_PARM_DESC(rx_topology,
+		 "CVP receive processing topology when bypass_topology is disabled.");
+
+void q6cvp_get_topologies(u32 *tx_topology_id, u32 *rx_topology_id)
+{
+	if (bypass_topology) {
+		*tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
+		*rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
+	} else {
+		*tx_topology_id = tx_topology;
+		*rx_topology_id = rx_topology;
+	}
+}
+EXPORT_SYMBOL_GPL(q6cvp_get_topologies);
+
 struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 					     u16 tx_port, u16 rx_port,
 					     bool create_v3)
@@ -344,13 +371,7 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 	 * that is created, enabled, and produces nothing. NONE is the
 	 * pass-through: no modules, no parameters, just the audio.
 	 */
-	if (bypass_topology) {
-		cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
-		cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_NONE;
-	} else {
-		cmd.tx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS;
-		cmd.rx_topology_id = VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT;
-	}
+	q6cvp_get_topologies(&cmd.tx_topology_id, &cmd.rx_topology_id);
 
 	cmd.direction = VSS_IVOCPROC_DIRECTION_RX_TX;
 	cmd.tx_port_id = tx_port;

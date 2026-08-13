@@ -131,6 +131,14 @@ struct vss_imvm_cmd_attach_vocproc_cmd {
 #define VSS_IMVM_CMD_START_VOICE			0x00011190
 #define VSS_IMVM_CMD_STOP_VOICE				0x00011192
 
+#define VSS_ISTREAM_CMD_SET_TTY_MODE			0x00011196
+
+struct vss_istream_cmd_set_tty_mode {
+	struct apr_hdr hdr;
+
+	u32 mode;
+} __packed;
+
 static int q6mvm_set_dual_control(struct q6voice_session *mvm)
 {
 	struct vss_imvm_cmd_set_policy_dual_control_cmd cmd;
@@ -199,6 +207,18 @@ int q6mvm_attach_stream(struct q6voice_session *mvm, struct q6voice_session *cvs
 	return q6voice_common_send(mvm, &cmd.hdr);
 }
 EXPORT_SYMBOL_GPL(q6mvm_attach_stream);
+
+int q6mvm_set_tty_mode(struct q6voice_session *mvm, u32 mode)
+{
+	struct vss_istream_cmd_set_tty_mode cmd = {0};
+
+	cmd.hdr.pkt_size = sizeof(cmd);
+	cmd.hdr.opcode = VSS_ISTREAM_CMD_SET_TTY_MODE;
+	cmd.mode = mode;
+
+	return q6voice_common_send(mvm, &cmd.hdr);
+}
+EXPORT_SYMBOL_GPL(q6mvm_set_tty_mode);
 
 int q6mvm_start(struct q6voice_session *mvm, bool state)
 {

@@ -23,10 +23,12 @@
 
 #include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
 #include <linux/mhi.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/seq_file.h>
 #include <linux/sizes.h>
@@ -76,10 +78,7 @@ static int q6voice_mhi_mailbox_show(struct seq_file *s, void *unused)
 	size_t nonzero = 0;
 	size_t i;
 
-	/* Both agents write this behind our back; take the CPU's view back. */
-	dma_sync_single_for_cpu(ctx->adsp_dev, ctx->iova_adsp,
-				VOICE_MAILBOX_SIZE, DMA_FROM_DEVICE);
-
+	/* The reserved region is mapped write-combining, so it is not cached. */
 	for (i = 0; i < VOICE_MAILBOX_SIZE; i++)
 		if (buf[i])
 			nonzero++;
@@ -90,9 +89,6 @@ static int q6voice_mhi_mailbox_show(struct seq_file *s, void *unused)
 	seq_printf(s, "votes:      %u\n", ctx->votes);
 	seq_printf(s, "nonzero:    %zu\n", nonzero);
 	seq_printf(s, "head:       %*ph\n", 64, buf);
-
-	dma_sync_single_for_device(ctx->adsp_dev, ctx->iova_adsp,
-				   VOICE_MAILBOX_SIZE, DMA_FROM_DEVICE);
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(q6voice_mhi_mailbox);
@@ -258,7 +254,6 @@ static int q6voice_mhi_map_and_configure(struct q6voice_mhi *ctx,
 					 struct device *pcie_dev)
 {
 	dma_addr_t iova;
-	int ret;
 
 	iova = dma_map_resource(pcie_dev, ctx->phys, VOICE_MAILBOX_SIZE,
 				DMA_BIDIRECTIONAL, 0);
@@ -311,6 +306,24 @@ static int q6voice_mhi_probe_mhi(struct mhi_device *mhi_dev,
 	if (ret)
 		return ret;
 
+	/*
+	 * Start the channel even though we will never queue a buffer on it.
+	 * The modem will not begin moving call audio until AUDIO_VOICE_0 is
+	 * running: it is told the mailbox is ready, goes to use the channel,
+	 * finds it was never started, and quietly does nothing - which looks
+	 * exactly like a perfect voice session that makes no sound.
+	 */
+	ret = mhi_prepare_for_transfer(mhi_dev);
+	if (ret) {
+		dev_err(ctx->adsp_dev, "failed to start the voice channel: %d\n",
+			ret);
+		mutex_lock(&ctx->lock);
+		ctx->mhi_dev = NULL;
+		q6voice_mhi_unmap_pcie(ctx);
+		mutex_unlock(&ctx->lock);
+		return ret;
+	}
+
 	dev_set_drvdata(&mhi_dev->dev, ctx);
 	return 0;
 }
@@ -333,9 +346,11 @@ static void q6voice_mhi_remove_mhi(struct mhi_device *mhi_dev)
 
 	q6voice_mhi_unmap_pcie(ctx);
 	mutex_unlock(&ctx->lock);
+
+	mhi_unprepare_from_transfer(mhi_dev);
 }
 
-/* Offload channel: the host is never asked to move data on it. */
+/* The host never queues anything here; the modem DMAs into the mailbox. */
 static void q6voice_mhi_xfer_cb(struct mhi_device *mhi_dev,
 				struct mhi_result *result)
 {
@@ -361,6 +376,8 @@ static struct mhi_driver q6voice_mhi_driver = {
 static int q6voice_mhi_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *rmem_node;
+	struct reserved_mem *rmem;
 	struct q6voice_mhi *ctx;
 	int ret;
 
@@ -380,23 +397,39 @@ static int q6voice_mhi_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret, "no 32-bit DMA\n");
 
 	/*
-	 * Allocate the pages directly rather than with dma_alloc_coherent():
-	 * we need a known physical address to map a second time for the modem,
-	 * and a coherent allocation would only give us this device's IOVA.
+	 * Android uses a dedicated no-map region and maps the same physical
+	 * memory as a resource into the audio and PCIe IOMMU domains. Normal
+	 * cached RAM plus dma_map_single() is not equivalent: it makes this
+	 * device the owner of the allocation and leaves coherency ambiguous for
+	 * the second, unrelated PCIe mapping.
 	 */
-	ctx->buf = (void *)__get_free_pages(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO,
-					    get_order(VOICE_MAILBOX_SIZE));
-	if (!ctx->buf)
-		return -ENOMEM;
+	rmem_node = of_parse_phandle(dev->of_node, "memory-region", 0);
+	if (!rmem_node)
+		return dev_err_probe(dev, -ENODEV, "no mailbox memory-region\n");
 
-	ctx->phys = virt_to_phys(ctx->buf);
+	rmem = of_reserved_mem_lookup(rmem_node);
+	of_node_put(rmem_node);
+	if (!rmem)
+		return dev_err_probe(dev, -EPROBE_DEFER,
+				     "mailbox reserved memory is not ready\n");
+	if (rmem->size < VOICE_MAILBOX_SIZE)
+		return dev_err_probe(dev, -EINVAL,
+				     "mailbox memory-region is too small\n");
+
+	ctx->phys = rmem->base;
+	ctx->buf = devm_memremap(dev, ctx->phys, VOICE_MAILBOX_SIZE,
+				 MEMREMAP_WC);
+	if (IS_ERR(ctx->buf))
+		return dev_err_probe(dev, PTR_ERR(ctx->buf),
+				     "failed to map mailbox for the CPU\n");
+	memset(ctx->buf, 0, VOICE_MAILBOX_SIZE);
 
 	/* This device carries the ADSP stream ID, so this is the ADSP's view */
-	ctx->iova_adsp = dma_map_single(dev, ctx->buf, VOICE_MAILBOX_SIZE,
-					DMA_BIDIRECTIONAL);
+	ctx->iova_adsp = dma_map_resource(dev, ctx->phys, VOICE_MAILBOX_SIZE,
+					  DMA_BIDIRECTIONAL, 0);
 	if (dma_mapping_error(dev, ctx->iova_adsp)) {
-		ret = -ENOMEM;
-		goto err_free;
+		return dev_err_probe(dev, -ENOMEM,
+				     "failed to map mailbox for the ADSP\n");
 	}
 
 	platform_set_drvdata(pdev, ctx);
@@ -426,10 +459,8 @@ err_unregister:
 	q6voice_set_modem_link(NULL);
 	debugfs_remove_recursive(ctx->debugfs);
 	q6voice_mhi_ctx = NULL;
-	dma_unmap_single(dev, ctx->iova_adsp, VOICE_MAILBOX_SIZE,
-			 DMA_BIDIRECTIONAL);
-err_free:
-	free_pages((unsigned long)ctx->buf, get_order(VOICE_MAILBOX_SIZE));
+	dma_unmap_resource(dev, ctx->iova_adsp, VOICE_MAILBOX_SIZE,
+			   DMA_BIDIRECTIONAL, 0);
 	return ret;
 }
 
@@ -448,9 +479,8 @@ static void q6voice_mhi_remove(struct platform_device *pdev)
 	q6voice_mhi_unmap_pcie(ctx);
 	mutex_unlock(&ctx->lock);
 
-	dma_unmap_single(ctx->adsp_dev, ctx->iova_adsp, VOICE_MAILBOX_SIZE,
-			 DMA_BIDIRECTIONAL);
-	free_pages((unsigned long)ctx->buf, get_order(VOICE_MAILBOX_SIZE));
+	dma_unmap_resource(ctx->adsp_dev, ctx->iova_adsp,
+			   VOICE_MAILBOX_SIZE, DMA_BIDIRECTIONAL, 0);
 	q6voice_mhi_ctx = NULL;
 }
 

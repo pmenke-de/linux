@@ -5,6 +5,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/dma-map-ops.h>
+#include <linux/dma-mapping.h>
+#include <linux/iommu.h>
 #include <linux/spinlock.h>
 #include <linux/idr.h>
 #include <linux/slab.h>
@@ -399,12 +402,47 @@ static int apr_uevent(const struct device *dev, struct kobj_uevent_env *env)
 	return add_uevent_var(env, "MODALIAS=apr:%s", adev->name);
 }
 
+/*
+ * APR children are real DMA clients when a service node has an IOMMU specifier.
+ * Configure those children through the normal driver-core bus hooks so setup
+ * happens before probe and is unwound on failed probe or driver removal.
+ */
+static int apr_dma_configure(struct device *dev)
+{
+	int ret;
+
+	if (!dev->of_node || !of_find_property(dev->of_node, "iommus", NULL))
+		return 0;
+
+	ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (ret)
+		return ret;
+
+	ret = of_dma_configure(dev, dev->of_node, true);
+	if (ret)
+		return ret;
+
+	ret = iommu_device_use_default_domain(dev);
+	if (ret)
+		arch_teardown_dma_ops(dev);
+
+	return ret;
+}
+
+static void apr_dma_cleanup(struct device *dev)
+{
+	if (dev->of_node && of_find_property(dev->of_node, "iommus", NULL))
+		iommu_device_unuse_default_domain(dev);
+}
+
 const struct bus_type aprbus = {
 	.name		= "aprbus",
 	.match		= apr_device_match,
 	.probe		= apr_device_probe,
 	.uevent		= apr_uevent,
 	.remove		= apr_device_remove,
+	.dma_configure	= apr_dma_configure,
+	.dma_cleanup	= apr_dma_cleanup,
 };
 EXPORT_SYMBOL_GPL(aprbus);
 

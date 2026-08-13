@@ -341,6 +341,18 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 	size_t len = skb->len;
 	int rc, confirm_rx;
 
+	/*
+	 * Debug aid for the apollo call-audio investigation: the audio DSP and
+	 * the external modem are meant to negotiate the voice path as QMI peers
+	 * routed through here. Log only that pair so a call can be watched
+	 * without drowning in ModemManager's polling.
+	 */
+	if ((from->sq_node == 2 && to->sq_node == 3) ||
+	    (from->sq_node == 3 && to->sq_node == 2))
+		pr_info_ratelimited("qrtr: dsp<->modem %u:%u -> %u:%u type %d len %zu\n",
+				    from->sq_node, from->sq_port,
+				    to->sq_node, to->sq_port, type, skb->len);
+
 	confirm_rx = qrtr_tx_wait(node, to->sq_node, to->sq_port, type);
 	if (confirm_rx < 0) {
 		kfree_skb(skb);

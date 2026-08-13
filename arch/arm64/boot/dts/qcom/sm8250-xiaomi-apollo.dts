@@ -220,12 +220,39 @@
 			ecc-size = <0x00>;
 			no-map;
 		};
+
+		/*
+		 * Shared voice-packet mailbox between the ADSP and the SDX55.
+		 * Match the Android vendor allocation exactly: neither CPU RAM nor a
+		 * coherent allocation owned by one IOMMU domain, but a no-map physical
+		 * region which is mapped separately into both domains by q6voice-mhi.
+		 */
+		voice_mailbox_mem: voice-mailbox {
+			compatible = "shared-dma-pool";
+			no-map;
+			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
+			alignment = <0x0 0x400000>;
+			size = <0x0 0x20000>;
+		};
 	};
 };
 
 &adsp {
 	firmware-name = "postmarketos/adsp.mbn";
 	status = "okay";
+
+	/*
+	 * AVCS custom topologies use the same audio context bank as voice
+	 * calibration. q6core is an APR child rather than a platform device,
+	 * so the APR bus explicitly configures this DMA domain.
+	 */
+	glink-edge {
+		apr {
+			service@3 {
+				iommus = <&apps_smmu 0x1801 0x0>;
+			};
+		};
+	};
 };
 
 &apps_rsc {
@@ -835,6 +862,7 @@
 	q6voicemhi: mailbox {
 		compatible = "qcom,q6voice-mhi";
 		iommus = <&apps_smmu 0x1801 0x0>;
+		memory-region = <&voice_mailbox_mem>;
 	};
 
 	/*

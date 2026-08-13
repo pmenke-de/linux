@@ -3,15 +3,22 @@
 #define _Q6_VOICE_H
 
 enum q6voice_path_type {
-	Q6VOICE_PATH_VOICE	= 0,
+	/*
+	 * Android maps VSID 0x11c05000 (VoiceMMode1) to passive-session
+	 * index 6 and uses that index as the APR source port. The session name
+	 * alone is not sufficient: using source port 0 creates the legacy Voice
+	 * passive session, which the modem's VoiceMMode1 state machine never
+	 * joins even though every ADSP command succeeds.
+	 */
+	Q6VOICE_PATH_VOICEMMODE1 = 6,
+	Q6VOICE_PATH_VOICE	= Q6VOICE_PATH_VOICEMMODE1,
 	/* TODO: Q6VOICE_PATH_VOIP	= 1, */
 	/* TODO: Q6VOICE_PATH_VOLTE	= 2, */
 	/* TODO: Q6VOICE_PATH_VOICE2	= 3, */
 	/* TODO: Q6VOICE_PATH_QCHAT	= 4, */
 	/* TODO: Q6VOICE_PATH_VOWLAN	= 5, */
-	/* TODO: Q6VOICE_PATH_VOICEMMODE1	= 6, */
 	/* TODO: Q6VOICE_PATH_VOICEMMODE2	= 7, */
-	Q6VOICE_PATH_COUNT
+	Q6VOICE_PATH_COUNT	= 8,
 };
 
 struct q6voice;

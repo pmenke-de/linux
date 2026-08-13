@@ -59,6 +59,7 @@ struct q6voice {
 #define Q6VOICE_DEV_CFG_FIRMWARE	"qcom/q6voice-devcfg.bin"
 #define Q6VOICE_CAL_FIRMWARE		"qcom/q6voice-cal.bin"
 #define Q6VOICE_VOL_CAL_FIRMWARE	"qcom/q6voice-vol-cal.bin"
+#define Q6VOICE_CUSTOM_TOPOLOGY_FIRMWARE "qcom/apollo-avcs-custom-topologies.bin"
 
 /*
  * Downlink volume for a call. Android's HAL maps the user-facing volume onto
@@ -158,7 +159,12 @@ static bool cal_reload;
 module_param(cal_reload, bool, 0644);
 MODULE_PARM_DESC(cal_reload, "Re-read the calibration files on every call.");
 
-static int cal_level = Q6VOICE_CAL_NONE;
+/*
+ * Registering calibration is not optional on this board: without it the DSP
+ * refuses the volume step (0x112c2) and the call is silent. It defaulted to
+ * off while the table format was still being worked out.
+ */
+static int cal_level = Q6VOICE_CAL_REGISTER;
 module_param(cal_level, int, 0644);
 MODULE_PARM_DESC(cal_level,
 		 "0 to leave calibration alone, 1 to lend the DSP the memory, 2 to also register it.");
@@ -173,6 +179,7 @@ static int q6voice_path_start(struct q6voice_path *p)
 	struct device *dev = p->v->dev;
 	struct q6voice_session *mvm, *cvp, *cvs = NULL;
 	int ret;
+	u32 tx_topology, rx_topology;
 
 	dev_info(dev, "start path %d, setup level %d\n", p->type, setup_level);
 
@@ -231,6 +238,35 @@ static int q6voice_path_start(struct q6voice_path *p)
 	    !q6mvm_get_cvd_version(p->v->cvd_version, sizeof(p->v->cvd_version)))
 		dev_info(dev, "ADSP CVD version: '%s'\n", p->v->cvd_version);
 
+	/*
+	 * Android loads the selected topology modules with call calibration,
+	 * before it creates the CVP session. Keep that ordering here so the
+	 * ADSP sees topology preload before any CVP state exists.
+	 */
+	if (setup_level == 0) {
+		q6cvp_get_topologies(&tx_topology, &rx_topology);
+		if (tx_topology == VSS_IVOCPROC_TOPOLOGY_ID_NONE &&
+		    rx_topology == VSS_IVOCPROC_TOPOLOGY_ID_NONE)
+			goto topology_ready;
+
+		ret = q6core_register_custom_topologies(
+			Q6VOICE_CUSTOM_TOPOLOGY_FIRMWARE);
+		if (ret) {
+			dev_err(dev, "custom topology registration failed: %d\n", ret);
+			goto stream_err;
+		}
+
+		dev_info(dev, "preload CVD topology modules tx %#010x rx %#010x\n",
+			 tx_topology, rx_topology);
+		ret = q6core_load_topo_modules(rx_topology);
+		if (ret)
+			goto stream_err;
+		ret = q6core_load_topo_modules(tx_topology);
+		if (ret)
+			goto stream_err;
+	}
+topology_ready:
+
 	cvp = p->runtime->sessions[Q6VOICE_SERVICE_CVP];
 	if (!cvp) {
 		cvp = q6cvp_session_create(p->type,
@@ -263,19 +299,6 @@ static int q6voice_path_start(struct q6voice_path *p)
 				     q6afe_get_port_id(p->rx_port));
 	if (ret)
 		dev_warn(dev, "set media format failed: %d\n", ret);
-
-	/*
-	 * The commit below publishes topology modules that must already be
-	 * loaded. Ask the core to load the ones this vocproc was created with;
-	 * on the vendor these ids come from calibration, so the stock defaults
-	 * may or may not be present in the ADSP.
-	 */
-	ret = q6core_load_topo_modules(VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT);
-	if (ret)
-		dev_warn(dev, "load rx topo modules failed: %d\n", ret);
-	ret = q6core_load_topo_modules(VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS);
-	if (ret)
-		dev_warn(dev, "load tx topo modules failed: %d\n", ret);
 
 	/*
 	 * Commit the topology before enabling. Not fatal if the ADSP rejects
@@ -359,14 +382,19 @@ configured:
 		goto attach_err;
 	}
 
+	ret = q6mvm_set_tty_mode(mvm, 0);
+	if (ret)
+		dev_warn(dev, "failed to disable TTY mode: %d\n", ret);
+
 	if (setup_level > 0)
 		goto started;
 
 
 	/*
-	 * Volume and mute, before the call runs and in that order, as the
-	 * vendor does. Neither is fatal: the call is still established without
-	 * them, just inaudible, and saying so beats refusing to start.
+	 * Android sets receive volume and clears the CVS transmit stream mute
+	 * before starting voice. Neither command is fatal: the call is still
+	 * established without it, just inaudible, and saying so beats refusing
+	 * to start.
 	 */
 	ret = q6cvp_set_rx_volume(cvp, Q6VOICE_RX_VOLUME_STEP,
 				  Q6VOICE_VOLUME_RAMP_MS);
@@ -378,26 +406,25 @@ configured:
 	if (ret)
 		dev_warn(dev, "failed to unmute tx stream: %d\n", ret);
 
-	/*
-	 * The device mute is a second gate, on the vocproc rather than the
-	 * stream, and it applies to both directions. Unlike the stream mute the
-	 * vendor clears it for uplink and downlink both.
-	 */
-	ret = q6cvp_set_device_mute(cvp, VSS_IVOLUME_DIRECTION_RX, false,
-				    Q6VOICE_MUTE_RAMP_MS);
-	if (ret)
-		dev_warn(dev, "failed to unmute rx device: %d\n", ret);
-
-	ret = q6cvp_set_device_mute(cvp, VSS_IVOLUME_DIRECTION_TX, false,
-				    Q6VOICE_MUTE_RAMP_MS);
-	if (ret)
-		dev_warn(dev, "failed to unmute tx device: %d\n", ret);
-
 started:
 	ret = q6mvm_start(mvm, true);
 	if (ret) {
 		dev_err(dev, "failed to start voice: %d\n", ret);
 		goto start_err;
+	}
+
+	/*
+	 * Match voc_enable_device() in the captured Android vendor driver: only
+	 * the receive-side CVP device mute is restored here, and it is restored
+	 * after START_VOICE has completed. Sending CVP RX and TX mute commands
+	 * before START_VOICE differs from that state transition even though the
+	 * DSP accepts the packets.
+	 */
+	if (setup_level == 0) {
+		ret = q6cvp_set_device_mute(cvp, VSS_IVOLUME_DIRECTION_RX, false,
+					    Q6VOICE_MUTE_RAMP_MS);
+		if (ret)
+			dev_warn(dev, "failed to unmute rx device: %d\n", ret);
 	}
 
 	return ret;

@@ -17,6 +17,14 @@
 #include "sdw.h"
 
 #define MI2S_BCLK_RATE		1536000
+/*
+ * The tertiary link carries the speaker amplifiers and call downlink. The
+ * vocproc calibration extracted from the stock ACDB describes a 96 kHz render
+ * device, and the DSP refuses a volume step (0x112c2) against a device that
+ * does not match it - so the port has to run at that rate too: two 32-bit
+ * slots at 96 kHz is 6.144 MHz.
+ */
+#define TERT_MI2S_BCLK_RATE	6144000
 
 static unsigned int tdm_slot_offset[8] = {0, 4, 8, 12, 16, 20, 24, 28};
 /*
@@ -250,16 +258,16 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
 		snd_soc_dai_set_sysclk(cpu_dai,
 			Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
-			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+			TERT_MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
 		snd_soc_dai_set_fmt(cpu_dai, fmt);
 
 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
 			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
 			/* CS35L41_CLKID_SCLK=0: configure PLL to lock on BCLK */
-			snd_soc_dai_set_sysclk(codec_dai, 0, MI2S_BCLK_RATE,
+			snd_soc_dai_set_sysclk(codec_dai, 0, TERT_MI2S_BCLK_RATE,
 					       SNDRV_PCM_STREAM_PLAYBACK);
 			snd_soc_component_set_sysclk(codec_dai->component,
-						     0, 0, MI2S_BCLK_RATE,
+						     0, 0, TERT_MI2S_BCLK_RATE,
 						     SND_SOC_CLOCK_IN);
 			if (ret < 0) {
 				dev_err(rtd->dev, "MI2S fmt err:%d\n", ret);
