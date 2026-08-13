@@ -174,7 +174,11 @@ static int hdlc_decode(const uint8_t *frame, size_t flen,
 #define DIAG_QSR4_EXT_MSG_F	0x61
 
 /* DIAG_EXT_MSG_CONFIG sub-commands */
-#define MSG_EXT_CFG_SET_RT_MASK	4
+#define MSG_EXT_CFG_GET_SSID_RANGES	1
+#define MSG_EXT_CFG_GET_BUILD_MASK	2
+#define MSG_EXT_CFG_GET_RT_MASK		3
+#define MSG_EXT_CFG_SET_RT_MASK		4
+#define MSG_EXT_CFG_SET_ALL_RT_MASKS	5
 
 /* DIAG_LOG_CONFIG operations */
 #define LOG_CONFIG_SET_MASK_OP	3
@@ -846,6 +850,85 @@ static int f3_set_range(int fd, unsigned int first, unsigned int last)
  * live) is refused wholesale even though sub-command 0x02 reports real levels
  * for it.
  */
+/*
+ * The big hammer: one command that sets the runtime mask of *every* SSID at
+ * once, which is what QXDM sends when you ask it for all F3 messages. Worth
+ * trying before walking the ranges, because a modem that takes this needs
+ * nothing else.
+ */
+static int f3_set_all_masks(int fd, uint32_t level)
+{
+	uint8_t cmd[8], ack[64];
+	int dlen;
+
+	cmd[0] = DIAG_EXT_MSG_CONFIG_F;
+	cmd[1] = MSG_EXT_CFG_SET_ALL_RT_MASKS;
+	cmd[2] = 0;
+	cmd[3] = 0;
+	cmd[4] = level & 0xFF;
+	cmd[5] = (level >> 8) & 0xFF;
+	cmd[6] = (level >> 16) & 0xFF;
+	cmd[7] = (level >> 24) & 0xFF;
+
+	dlen = diag_txrx(fd, cmd, sizeof(cmd), ack, sizeof(ack), 1000);
+	if (dlen > 0 && ack[0] == DIAG_EXT_MSG_CONFIG_F &&
+	    ack[1] == MSG_EXT_CFG_SET_ALL_RT_MASKS) {
+		fprintf(stderr, "[%9.3f] F3: SET_ALL_RT_MASKS(0x%08x) accepted\n",
+			mono_sec(), level);
+		return 0;
+	}
+
+	fprintf(stderr, "[%9.3f] F3: SET_ALL_RT_MASKS(0x%08x) refused\n",
+		mono_sec(), level);
+	return -1;
+}
+
+/*
+ * Read back what the modem says is actually enabled. This is the measurement
+ * that separates "our commands never took effect" from "the masks are set and
+ * the modem still will not emit" - and nothing so far has made that
+ * distinction, which is why a silent capture has been so hard to interpret.
+ */
+static void f3_dump_runtime_mask(int fd, unsigned int first, unsigned int last)
+{
+	unsigned int count = last - first + 1;
+	uint8_t q[8], rsp[8 + 4 * 4096];
+	unsigned int j, set = 0;
+	int dlen;
+
+	if (last < first || count > 4096)
+		return;
+
+	q[0] = DIAG_EXT_MSG_CONFIG_F;
+	q[1] = MSG_EXT_CFG_GET_RT_MASK;
+	q[2] = first & 0xFF;
+	q[3] = (first >> 8) & 0xFF;
+	q[4] = last & 0xFF;
+	q[5] = (last >> 8) & 0xFF;
+	q[6] = 0;
+	q[7] = 0;
+
+	dlen = diag_txrx(fd, q, sizeof(q), rsp, sizeof(rsp), 1000);
+	if (dlen < (int)(8 + 4 * count) || rsp[0] != DIAG_EXT_MSG_CONFIG_F ||
+	    rsp[1] != MSG_EXT_CFG_GET_RT_MASK) {
+		fprintf(stderr, "[%9.3f] F3: runtime mask %u-%u unreadable\n",
+			mono_sec(), first, last);
+		return;
+	}
+
+	for (j = 0; j < count; j++) {
+		const uint8_t *p = &rsp[8 + 4 * j];
+		uint32_t lv = p[0] | (p[1] << 8) | (p[2] << 16) |
+			      ((uint32_t)p[3] << 24);
+
+		if (lv)
+			set++;
+	}
+
+	fprintf(stderr, "[%9.3f] F3: runtime mask %u-%u: %u/%u SSID(s) non-zero\n",
+		mono_sec(), first, last, set, count);
+}
+
 static unsigned int f3_apply_range(int fd, unsigned int first, unsigned int last,
 				   int depth)
 {
@@ -950,6 +1033,12 @@ static int enable_f3_messages(int fd)
 	fprintf(stderr, "[%9.3f] F3: modem reports %u SSID range(s)\n",
 		mono_sec(), num_ranges);
 
+	/*
+	 * Try the all-at-once mask first. The per-range walk below still runs
+	 * either way: a modem that took this will simply accept every range.
+	 */
+	f3_set_all_masks(fd, 0xFFFFFFFFu);
+
 	if (8 + 4 * num_ranges > (unsigned int)dlen) {
 		fprintf(stderr, "[%9.3f] F3: truncated range list\n", mono_sec());
 		return -1;
@@ -965,6 +1054,21 @@ static int enable_f3_messages(int fd)
 
 	fprintf(stderr, "[%9.3f] F3: %u SSID(s) enabled across %u range(s)\n",
 		mono_sec(), total, num_ranges);
+
+	/*
+	 * Now ask the modem what it thinks is enabled. Setting a mask and being
+	 * told "ok" says nothing about whether it stuck; this does. If these all
+	 * read back zero the commands are not taking effect, and if they read
+	 * back non-zero while the capture stays empty the masks are not the
+	 * problem at all.
+	 */
+	for (i = 0; i < num_ranges; i++) {
+		unsigned int off = 8 + 4 * i;
+		unsigned int first = rsp[off] | (rsp[off + 1] << 8);
+		unsigned int last  = rsp[off + 2] | (rsp[off + 3] << 8);
+
+		f3_dump_runtime_mask(fd, first, last);
+	}
 
 	enable_log_masks(fd);
 	return total ? 0 : -1;
