@@ -26,6 +26,8 @@
 #define SDX50M_LABEL			"SDX50M"
 #define SDX50M_PCIE			"PCIe"
 #define SDX55M_LABEL			"SDX55M"
+/* What the other subsystems know the external modem as, on the wire. */
+#define ESOC0_LABEL			"esoc0"
 #define SDX55M_PCIE			"PCIe"
 #define LEMUR_LABEL			"SDXLEMUR"
 #define LEMUR_PCIE			"PCIe"

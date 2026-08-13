@@ -1068,7 +1068,19 @@ static int sdx55m_setup_hw(struct mdm_ctrl *mdm, const struct mdm_ops *ops,
 	if (ret)
 		dev_info(mdm->dev, "esoc ssctl id missing\n");
 
-	esoc->sysmon_name = SDX55M_LABEL;
+	/*
+	 * The name here goes out to the other subsystems, which recognise the
+	 * external modem as "esoc0" and nothing else. The audio DSP is the one
+	 * that cares: its MVM waits for SYS_M_SSR_EXT_MODEM_AFTER_POWERUP before
+	 * it will hand the modem the voice mailbox, and it matches that on the
+	 * subsystem name carried in the notification. Announcing "SDX55M" left
+	 * the DSP believing the modem had never come up, so it stored the
+	 * mailbox configuration the AP gave it and then refused to answer the
+	 * modem's request for it -- a five second timeout in the modem's voice
+	 * service and a silent call. Both firmwares list ssr:esoc0:after_powerup
+	 * and ssr:esoc0:after_shutdown; neither has ever heard of SDX55M.
+	 */
+	esoc->sysmon_name = ESOC0_LABEL;
 	esoc->clink_ops = clink_ops;
 	esoc->parent = mdm->dev;
 	esoc->owner = THIS_MODULE;
