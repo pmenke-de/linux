@@ -33,10 +33,13 @@ from acdb_chunks import chunks
 
 MODULE_WORDS = 6
 
-# The database as ACDB stores it, which is not what AVCS is given. Both are
-# [count][version] followed by per-topology {id, flags, num_modules, modules,
-# terminator}; only the module entry differs, and the terminator happens to
-# equal the version.
+# The database as ACDB stores it: [count][version] followed by per-topology
+# {id, flags, num_modules, modules, terminator}. Only the module entry width
+# differs between versions.
+#
+# Walk exactly [count] topologies. The terminator is not reliably equal to the
+# version -- stopping on that read 45 of the 95 topologies in one real blob and
+# made a topology that is present look absent, which cost a long detour.
 ACDB_MODULE_WORDS = {0: 1, 2: 2}
 
 
@@ -68,12 +71,11 @@ def parse_acdb_topologies(payload):
         return None
     stride = ACDB_MODULE_WORDS[version]
 
+    count = words[0]
     i, out = 2, []
-    while i + 3 <= len(words):
+    while len(out) < count and i + 3 <= len(words):
         topo_id, flags, nmods = words[i], words[i + 1], words[i + 2]
-        if not 0 < nmods <= 64 or i + 3 + nmods * stride + 1 > len(words):
-            break
-        if words[i + 3 + nmods * stride] != version:
+        if nmods > 64 or i + 3 + nmods * stride + 1 > len(words):
             break
         out.append((topo_id, flags,
                     [words[i + 3 + k * stride] for k in range(nmods)]))
