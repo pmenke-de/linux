@@ -11,6 +11,8 @@
 #include <linux/soundwire/sdw.h>
 #include <sound/jack.h>
 #include <linux/input-event-codes.h>
+#include <linux/uaccess.h>
+#include <sound/soc-card.h>
 #include "qdsp6/q6afe.h"
 #include "common.h"
 #include "usb_offload_utils.h"
@@ -25,8 +27,23 @@ static unsigned int tdm_slot_offset[8] = {0, 4, 8, 12, 16, 20, 24, 28};
  */
 #define TDM_BCLK_RATE		24576000
 
+/*
+ * The two CS35L41 are the loudspeaker and the receiver. Which is which was
+ * settled by powering one down during a call: with 0x42 off only the bottom
+ * speaker played. So "RCV" at 0x40 is the loudspeaker and "LCV" at 0x42 the
+ * receiver -- what both device trees say, even though the name prefixes read
+ * the other way round.
+ */
+enum {
+	SM8250_SPK_EARPIECE,
+	SM8250_SPK_LOUDSPEAKER,
+	SM8250_SPK_COUNT
+};
+
 struct sm8250_snd_data {
 	bool stream_prepared[AFE_PORT_MAX];
+	unsigned int spk_volume;
+	bool spk_off[SM8250_SPK_COUNT];
 	struct snd_soc_card *card;
 	struct snd_soc_jack jack;
 	struct snd_soc_jack usb_offload_jack;
@@ -108,10 +125,13 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 		}
 
 		/*
-		 * Give each amplifier its own slot, the way the MI2S path used
-		 * to: codec 0 takes the left slot, codec 1 the right. Without
-		 * this both parts keep the reset default and read slot 0, so at
-		 * best the two speakers play the same channel.
+		 * Give each amplifier its own slot. Without this both parts keep
+		 * the reset default and read slot 0, so at best the two speakers
+		 * play the same channel.
+		 *
+		 * Kept the same way round as the MI2S path above, which is the
+		 * one this board actually uses and where the assignment was
+		 * settled by ear.
 		 */
 		if (cpu_dai->id == TERTIARY_TDM_RX_0) {
 			struct snd_soc_dai *codec_dai;
@@ -439,6 +459,251 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
 	}
 }
 
+/*
+ * Both amplifiers are mono components with their own name prefix, so there is
+ * nothing single for userspace to move -- a UCM profile names one
+ * PlaybackVolume control -- and no way to play out of one of them alone, which
+ * is what an earpiece call needs.
+ *
+ * The volume is more than a convenience. Call audio is mixed in the ADSP and
+ * never passes through userspace, so a software volume cannot reach it; the
+ * amplifier gain is the only gain sitting in both the music and the call path.
+ *
+ * So present the pair as one volume and a switch each. The muting has to go
+ * through the digital volume, which has a mute at zero: the analog gain looks
+ * like the obvious candidate and is not one, because it bottoms out at
+ * +0.5 dB and a "muted" speaker is still perfectly audible. That puts the mute
+ * and the volume on the same register, so the switches are kept here as state
+ * and a muted amplifier is simply one the volume is not written to.
+ */
+static const char * const sm8250_spk_volume_name[SM8250_SPK_COUNT] = {
+	[SM8250_SPK_EARPIECE]	 = "LCV Digital PCM Volume",
+	[SM8250_SPK_LOUDSPEAKER] = "RCV Digital PCM Volume",
+};
+
+/*
+ * The amplifiers' output widgets, for powering one down on its own. Both parts
+ * share tlmm 114 as their reset, so neither can be held in reset separately;
+ * this is the only per amplifier off the board has.
+ */
+static const char * const sm8250_spk_widget_name[SM8250_SPK_COUNT] = {
+	[SM8250_SPK_EARPIECE]	 = "LCV SPK",
+	[SM8250_SPK_LOUDSPEAKER] = "RCV SPK",
+};
+
+static struct snd_kcontrol *sm8250_spk_kcontrol(struct snd_soc_card *card,
+						unsigned int i)
+{
+	return snd_soc_card_get_kcontrol(card, sm8250_spk_volume_name[i]);
+}
+
+static int sm8250_spk_write(struct snd_soc_card *card, unsigned int i,
+			    unsigned int val)
+{
+	struct snd_kcontrol *k = sm8250_spk_kcontrol(card, i);
+	struct snd_ctl_elem_value *ev;
+	int ret;
+
+	if (!k)
+		return -ENODEV;
+
+	/* Far too big for the stack, and this is never on a fast path. */
+	ev = kzalloc(sizeof(*ev), GFP_KERNEL);
+	if (!ev)
+		return -ENOMEM;
+
+	ev->value.integer.value[0] = val;
+	ret = k->put(k, ev);
+	kfree(ev);
+
+	/*
+	 * The amplifier's own control moved, and the core only reports the
+	 * control it was asked to write. Anything watching the pair --
+	 * alsamixer, a profile saving mixer state -- would otherwise keep
+	 * showing the value from before.
+	 */
+	if (ret > 0)
+		snd_ctl_notify(card->snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
+			       &k->id);
+
+	return ret;
+}
+
+static int sm8250_spk_apply(struct snd_soc_card *card)
+{
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
+	int changed = 0;
+	unsigned int i;
+
+	for (i = 0; i < SM8250_SPK_COUNT; i++) {
+		int ret;
+
+		/*
+		 * Turning the volume down is not an off switch. Muting the
+		 * digital volume leaves the amplifier running and this board
+		 * was still audible through it, so the output is powered down
+		 * as well; the mute goes with it so nothing leaks back on the
+		 * way through.
+		 */
+		if (data->spk_off[i])
+			snd_soc_dapm_disable_pin(card->dapm,
+						 sm8250_spk_widget_name[i]);
+		else
+			snd_soc_dapm_enable_pin(card->dapm,
+						sm8250_spk_widget_name[i]);
+
+		ret = sm8250_spk_write(card, i, data->spk_off[i] ?
+				       0 : data->spk_volume);
+		if (ret < 0)
+			return ret;
+		if (ret)
+			changed = 1;
+	}
+
+	snd_soc_dapm_sync(card->dapm);
+
+	return changed;
+}
+
+static int sm8250_spk_volume_info(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_info *uinfo)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct snd_kcontrol *k = sm8250_spk_kcontrol(card, 0);
+
+	if (!k)
+		return -ENODEV;
+
+	return k->info(k, uinfo);
+}
+
+static int sm8250_spk_volume_get(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
+
+	/*
+	 * Answered from here rather than from an amplifier: a muted one reads
+	 * back zero, and the volume the user set has to survive the mute.
+	 */
+	ucontrol->value.integer.value[0] = data->spk_volume;
+	return 0;
+}
+
+static int sm8250_spk_volume_put(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
+	unsigned int val = ucontrol->value.integer.value[0];
+
+	if (val == data->spk_volume)
+		return 0;
+
+	data->spk_volume = val;
+	return sm8250_spk_apply(card) < 0 ? -EIO : 1;
+}
+
+static int sm8250_spk_switch_get(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
+
+	ucontrol->value.integer.value[0] = !data->spk_off[kcontrol->private_value];
+	return 0;
+}
+
+static int sm8250_spk_switch_put(struct snd_kcontrol *kcontrol,
+				 struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
+	unsigned int i = kcontrol->private_value;
+	bool off = !ucontrol->value.integer.value[0];
+
+	if (off == data->spk_off[i])
+		return 0;
+
+	data->spk_off[i] = off;
+	return sm8250_spk_apply(card) < 0 ? -EIO : 1;
+}
+
+static int sm8250_spk_volume_tlv(struct snd_kcontrol *kcontrol, int op_flag,
+				 unsigned int size, unsigned int __user *tlv)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct snd_kcontrol *k = sm8250_spk_kcontrol(card, 0);
+	unsigned int len;
+
+	if (!k)
+		return -ENODEV;
+
+	/*
+	 * Hand back whatever the amplifier describes rather than restating its
+	 * range here: userspace turns this into dB, and a copy of the scale
+	 * that drifts from the real one is worse than none.
+	 */
+	if (k->vd[0].access & SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK)
+		return k->tlv.c(k, op_flag, size, tlv);
+
+	if (!k->tlv.p)
+		return -ENXIO;
+
+	len = 2 * sizeof(unsigned int) + k->tlv.p[1];
+	if (size < len)
+		return -ENOMEM;
+	if (copy_to_user(tlv, k->tlv.p, len))
+		return -EFAULT;
+
+	return 0;
+}
+
+static const struct snd_kcontrol_new sm8250_spk_controls[] = {
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
+		.name = "Speaker Playback Volume",
+		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
+			  SNDRV_CTL_ELEM_ACCESS_TLV_READ |
+			  SNDRV_CTL_ELEM_ACCESS_TLV_CALLBACK,
+		.info = sm8250_spk_volume_info,
+		.get = sm8250_spk_volume_get,
+		.put = sm8250_spk_volume_put,
+		.tlv.c = sm8250_spk_volume_tlv,
+	},
+	SOC_SINGLE_BOOL_EXT("Speaker Playback Switch", SM8250_SPK_LOUDSPEAKER,
+			    sm8250_spk_switch_get, sm8250_spk_switch_put),
+	SOC_SINGLE_BOOL_EXT("Earpiece Playback Switch", SM8250_SPK_EARPIECE,
+			    sm8250_spk_switch_get, sm8250_spk_switch_put),
+};
+
+static int sm8250_late_probe(struct snd_soc_card *card)
+{
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
+	struct snd_ctl_elem_value *ev;
+	struct snd_kcontrol *k;
+	unsigned int i;
+
+	/* Boards without the pair get nothing; the names would be a lie. */
+	for (i = 0; i < SM8250_SPK_COUNT; i++)
+		if (!sm8250_spk_kcontrol(card, i))
+			return 0;
+
+	/* Start from whatever the amplifiers already carry. */
+	ev = kzalloc(sizeof(*ev), GFP_KERNEL);
+	if (!ev)
+		return -ENOMEM;
+
+	k = sm8250_spk_kcontrol(card, 0);
+	if (!k->get(k, ev))
+		data->spk_volume = ev->value.integer.value[0];
+	kfree(ev);
+
+	return snd_soc_add_card_controls(card, sm8250_spk_controls,
+					 ARRAY_SIZE(sm8250_spk_controls));
+}
+
 static int sm8250_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -464,6 +729,7 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 		return ret;
 
 	card->driver_name = of_device_get_match_data(dev);
+	card->late_probe = sm8250_late_probe;
 	sm8250_add_be_ops(card);
 	return devm_snd_soc_register_card(dev, card);
 }
