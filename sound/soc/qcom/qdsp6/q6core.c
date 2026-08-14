@@ -9,6 +9,7 @@
 #include <linux/firmware.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/sizes.h>
 #include <linux/sched.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -352,6 +353,7 @@ int q6core_register_custom_topologies(const char *firmware_name)
 	dma_addr_t iova;
 	u64 dsp_addr;
 	u32 payload_size, map_handle = 0;
+	size_t buffer_size;
 	bool keep_buffer = false;
 	int ret, unmap_ret;
 
@@ -364,12 +366,18 @@ int q6core_register_custom_topologies(const char *firmware_name)
 			firmware_name, ret);
 		return ret;
 	}
-	if (!fw->size || fw->size > PAGE_SIZE) {
+	/*
+	 * A board's whole topology database, not a single topology, so one page
+	 * is not a safe bound -- this one is about eight kilobytes. Cap it at
+	 * something that still fits a contiguous coherent allocation.
+	 */
+	if (!fw->size || fw->size > SZ_128K) {
 		dev_err(&g_core->adev->dev, "invalid topology firmware size %zu\n",
 			fw->size);
 		ret = -EINVAL;
 		goto release_firmware;
 	}
+	buffer_size = ALIGN(fw->size, PAGE_SIZE);
 
 	payload_size = fw->size;
 	/*
@@ -377,13 +385,13 @@ int q6core_register_custom_topologies(const char *firmware_name)
 	 * address. A bare physical address can alias unrelated hardware in the
 	 * ADSP's address space.
 	 */
-	buffer = dma_alloc_coherent(&g_core->adev->dev, PAGE_SIZE, &iova,
+	buffer = dma_alloc_coherent(&g_core->adev->dev, buffer_size, &iova,
 				    GFP_KERNEL);
 	if (!buffer) {
 		ret = -ENOMEM;
 		goto release_firmware;
 	}
-	memset(buffer, 0, PAGE_SIZE);
+	memset(buffer, 0, buffer_size);
 	memcpy(buffer, fw->data, payload_size);
 	dsp_addr = q6voice_dsp_address(&g_core->adev->dev, iova);
 	release_firmware(fw);
@@ -410,7 +418,7 @@ int q6core_register_custom_topologies(const char *firmware_name)
 	map.num_regions = 1;
 	map.shm_addr_lsw = lower_32_bits(dsp_addr);
 	map.shm_addr_msw = upper_32_bits(dsp_addr);
-	map.mem_size_bytes = PAGE_SIZE;
+	map.mem_size_bytes = buffer_size;
 	g_core->mem_map_handle = 0;
 
 	ret = q6core_send_and_wait_topology(g_core, (struct apr_pkt *)&map,
@@ -479,7 +487,7 @@ free_buffer:
 		dev_err(&g_core->adev->dev,
 			"retaining custom topology DMA page after uncertain DSP state\n");
 	else
-		dma_free_coherent(&g_core->adev->dev, PAGE_SIZE, buffer, iova);
+		dma_free_coherent(&g_core->adev->dev, buffer_size, buffer, iova);
 	return ret;
 
 release_firmware:
