@@ -274,6 +274,11 @@ static int q6voice_reg_write(struct snd_soc_component *component,
 	return 0;
 }
 
+/*
+ * Call volume. Nothing else exposes one: the modem carries the audio and the
+ * PCM the userspace opens is a control channel, so the usual playback volume
+ * does not reach it. Without this a call is stuck at whatever the driver picks.
+ */
 static const struct snd_soc_component_driver q6voice_dai_component = {
 	.name = DRV_NAME,
 	.open = q6voice_dai_open,

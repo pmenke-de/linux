@@ -40,6 +40,8 @@ struct q6voice {
 	struct q6voice_cal *cal;	/* the vocproc, other than by step */
 	struct q6voice_cal *vol_cal;	/* the vocproc, per volume step */
 	bool cal_tried;
+	/* Downlink volume step, applied at call start and whenever it changes */
+	unsigned int rx_volume_step;
 	struct q6voice_path paths[Q6VOICE_PATH_COUNT];
 };
 
@@ -374,10 +376,10 @@ topology_ready:
 	 * proceeds, and only the volume command notices.
 	 */
 	if (cal_level >= Q6VOICE_CAL_LEND && (!p->v->cal_tried || cal_reload)) {
-		q6voice_cal_free(p->v->stream_cal);
-		q6voice_cal_free(p->v->dev_cfg);
-		q6voice_cal_free(p->v->cal);
-		q6voice_cal_free(p->v->vol_cal);
+		q6voice_cal_free(p->v->stream_cal, mvm);
+		q6voice_cal_free(p->v->dev_cfg, mvm);
+		q6voice_cal_free(p->v->cal, mvm);
+		q6voice_cal_free(p->v->vol_cal, mvm);
 
 		p->v->cal_tried = true;
 		p->v->stream_cal = q6voice_cal_load(dev,
@@ -445,7 +447,7 @@ configured:
 	 * established without it, just inaudible, and saying so beats refusing
 	 * to start.
 	 */
-	ret = q6cvp_set_rx_volume(cvp, Q6VOICE_RX_VOLUME_STEP,
+	ret = q6cvp_set_rx_volume(cvp, p->v->rx_volume_step,
 				  Q6VOICE_VOLUME_RAMP_MS);
 	if (ret)
 		dev_warn(dev, "failed to set rx volume: %d\n", ret);
@@ -624,12 +626,20 @@ static void q6voice_free(void *data)
 		mutex_destroy(&p->lock);
 	}
 
-	q6voice_cal_free(v->stream_cal);
-	q6voice_cal_free(v->dev_cfg);
-	q6voice_cal_free(v->cal);
-	q6voice_cal_free(v->vol_cal);
+	q6voice_cal_free(v->stream_cal, NULL);
+	q6voice_cal_free(v->dev_cfg, NULL);
+	q6voice_cal_free(v->cal, NULL);
+	q6voice_cal_free(v->vol_cal, NULL);
 }
 
+/*
+ * Downlink volume, as a step rather than a gain.
+ *
+ * The ADSP resolves a step against the volume calibration table for the device
+ * in use, so there is nothing meaningful to send it but an index; the vendor
+ * HAL maps the user-facing volume onto the same 0..5 range. Applied
+ * immediately when a call is up, and remembered for the next one either way.
+ */
 struct q6voice *q6voice_create(struct device *dev)
 {
 	struct q6voice *v;
@@ -641,6 +651,7 @@ struct q6voice *q6voice_create(struct device *dev)
 		return ERR_PTR(-ENOMEM);
 
 	v->dev = dev;
+	v->rx_volume_step = Q6VOICE_RX_VOLUME_STEP;
 
 	for (path = 0; path < Q6VOICE_PATH_COUNT; ++path) {
 		struct q6voice_path *p = &v->paths[path];

@@ -94,18 +94,32 @@ struct q6voice_cal_table {
 	__le32 block_size;
 } __packed;
 
-void q6voice_cal_free(struct q6voice_cal *cal)
+void q6voice_cal_free(struct q6voice_cal *cal, struct q6voice_session *mvm)
 {
 	if (!cal)
 		return;
 
 	/*
-	 * No unmap: that command has to be addressed to the MVM session that
-	 * lent the memory, and by the time calibration is freed the call --
-	 * and the session -- are long gone. Addressing it to the service
-	 * instead is what wedged the ADSP in the first place. The mapping goes
-	 * away with the session anyway.
+	 * The unmap has to be addressed to the MVM session that lent the
+	 * memory; addressing it to the service instead is what wedged the ADSP
+	 * once. Where the session is already gone the mapping went with it and
+	 * there is nothing to return, so callers pass NULL and this is skipped.
+	 *
+	 * Where it is still around -- reloading the calibration mid-call --
+	 * the mapping has to be handed back explicitly. The ADSP keeps only a
+	 * handful of these, and lending a fresh set on every call without
+	 * returning the last one exhausts them after a few calls: the map
+	 * fails with ADSP_ENORESOURCE, and a call with no calibration mapped
+	 * comes up silent.
 	 */
+	if (mvm && cal->mem_handle) {
+		int ret = q6mvm_unmap_memory(mvm, cal->mem_handle);
+
+		if (ret)
+			dev_warn(cal->dev,
+				 "failed to return calibration handle %#x: %d\n",
+				 cal->mem_handle, ret);
+	}
 
 	if (cal->table)
 		dma_free_coherent(cal->dev, PAGE_SIZE, cal->table,
@@ -274,7 +288,7 @@ struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 
 err_free:
 	cal->mem_handle = 0;
-	q6voice_cal_free(cal);
+	q6voice_cal_free(cal, NULL);
 err_release:
 	release_firmware(fw);
 	return NULL;

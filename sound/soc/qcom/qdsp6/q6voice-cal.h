@@ -14,7 +14,11 @@ struct q6voice_session;
  */
 struct q6voice_cal *q6voice_cal_load(struct device *dev, const char *name,
 				     struct q6voice_session *mvm);
-void q6voice_cal_free(struct q6voice_cal *cal);
+/*
+ * @mvm is the session the memory was lent to, and may be NULL when it is
+ * already gone -- the mapping goes with it, so there is nothing to return.
+ */
+void q6voice_cal_free(struct q6voice_cal *cal, struct q6voice_session *mvm);
 
 /*
  * @instance says which era of registration command the vocproc expects; it
