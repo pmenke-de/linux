@@ -314,6 +314,16 @@ struct vss_ivocproc_cmd_create_full_control_session_v2_cmd {
 	char name[20];
 } __packed;
 
+/*
+ * The render port to reference for echo cancellation, or zero to let the
+ * vocproc reference its own render path. Only meaningful with a topology that
+ * contains an echo canceller.
+ */
+static unsigned int ec_ref_port;
+module_param(ec_ref_port, uint, 0644);
+MODULE_PARM_DESC(ec_ref_port,
+		 "AFE port to use as the echo reference (0 = internal mixing).");
+
 static bool bypass_topology = true;
 module_param(bypass_topology, bool, 0644);
 MODULE_PARM_DESC(bypass_topology,
@@ -377,8 +387,22 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
 	cmd.tx_port_id = tx_port;
 	cmd.rx_port_id = rx_port;
 	cmd.profile_id = VSS_ICOMMON_CAL_NETWORK_ID_NONE;
-	cmd.vocproc_mode = VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING;
-	cmd.ec_ref_port_id = VSS_IVOCPROC_PORT_ID_NONE;
+	/*
+	 * Where the echo canceller gets its reference.
+	 *
+	 * Internal mixing leaves the vocproc to reference its own render path
+	 * and needs no port. The vendor does not use it here: it adds one echo
+	 * reference for this board, the tertiary render port, and hands it over
+	 * explicitly -- which is external mixing. A topology built for that and
+	 * run with internal mixing is what put the far end back in its own ear.
+	 */
+	if (ec_ref_port) {
+		cmd.vocproc_mode = VSS_IVOCPROC_VOCPROC_MODE_EC_EXT_MIXING;
+		cmd.ec_ref_port_id = ec_ref_port;
+	} else {
+		cmd.vocproc_mode = VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING;
+		cmd.ec_ref_port_id = VSS_IVOCPROC_PORT_ID_NONE;
+	}
 
 	pr_info("q6cvp: create%s tx_port %#06x rx_port %#06x tx_topo %#010x rx_topo %#010x direction %u mode %#010x ec_ref %#06x profile %#010x\n",
 		create_v3 ? " v3" : " v2", cmd.tx_port_id, cmd.rx_port_id,
