@@ -196,6 +196,14 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 
 	rate->min = rate->max = 48000;
 	channels->min = channels->max = 2;
+
+	/*
+	 * Clear the mask before naming a format. snd_mask_set_format() only
+	 * adds a bit, so setting a default here and a different format below
+	 * leaves both valid and the core takes the narrower one -- the backend
+	 * then runs 16-bit however carefully the wider format was asked for.
+	 */
+	snd_mask_none(fmt);
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
 
 	switch (cpu_dai->id) {
@@ -212,6 +220,7 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 		 * exactly 24.576 MHz.
 		 */
 		rate->min = rate->max = 96000;
+		snd_mask_none(fmt);
 		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
 		break;
 	case TX_CODEC_DMA_TX_0:
