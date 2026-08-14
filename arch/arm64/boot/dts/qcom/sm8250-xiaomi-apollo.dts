@@ -774,9 +774,9 @@
 	};
 
 	speaker-dai-link {
-		link-name = "Tertiary MI2S Playback";
+		link-name = "Tertiary TDM Playback";
 		cpu {
-			sound-dai = <&q6afedai TERTIARY_MI2S_RX>;
+			sound-dai = <&q6afedai TERTIARY_TDM_RX_0>;
 		};
 
 		platform {
@@ -827,20 +827,20 @@
 };
 
 /*
- * The amplifiers run on tertiary MI2S, not TDM.
- *
- * Android drives them over TDM and call downlink lands on TERT_TDM_RX_0 there,
- * so TDM was tried here at length: the vendor frame geometry, slot mask, byte
- * offsets and both amplifier receive slots were all matched against
- * kona_tdm_snd_hw_params() and a live stock mixer dump. The left channel plays
- * and the right one never does. On MI2S both channels are correct, and have
- * been every time. Measurement beats the vendor's paperwork here; if call audio
- * later turns out to require TDM, this is where to start again.
+ * The two CS35L41 amplifiers share the tertiary frame, one slot each, which is
+ * how Android drives them -- and call audio has to follow, since its downlink
+ * lands on TERT_TDM_RX_0 there. Framing values are the ones the amplifier wants
+ * (see sm8250-xiaomi-elish-common.dtsi, same SoC and same codec).
  */
 &q6afedai {
-	dai@20 {
-		reg = <TERTIARY_MI2S_RX>;
-		qcom,sd-lines = <1>;
+	dai@56 {
+		reg = <TERTIARY_TDM_RX_0>;
+		qcom,tdm-sync-mode = <0>;
+		qcom,tdm-sync-src = <1>;
+		qcom,tdm-data-out = <0>;
+		qcom,tdm-invert-sync = <1>;
+		qcom,tdm-data-delay = <1>;
+		qcom,tdm-data-align = <0>;
 	};
 };
 
