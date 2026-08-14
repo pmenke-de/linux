@@ -130,7 +130,7 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 				 * to - the same slot on both amplifiers - and
 				 * the part mixes what it finds there.
 				 */
-				unsigned int codec_slot[2] = { j, !j };
+				unsigned int codec_slot[2] = { !j, j };
 
 				ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
 								  2, codec_slot);
@@ -267,6 +267,35 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		snd_soc_dai_set_fmt(cpu_dai, fmt);
 
 		for_each_rtd_codec_dais(rtd, j, codec_dai) {
+			/*
+			 * Both receive slots have to be programmed, the way
+			 * the vendor codec driver does it from
+			 * cirrus,right-channel-amp:
+			 *
+			 *   RX1 = right ? 1 : 0
+			 *   RX2 = right ? 0 : 1
+			 *
+			 * Codec 0 is the loudspeaker at 0x40 and takes the
+			 * right slot, codec 1 the receiver and the left, so
+			 * the left channel comes out of the earpiece. That
+			 * agrees with the vendor marking 0x40, and only 0x40,
+			 * cirrus,right-channel-amp. Left at the reset default
+			 * both parts read slot 0 and play the same channel.
+			 *
+			 * The TDM path does this too, but this board runs the
+			 * amplifiers on MI2S, so doing it only there left the
+			 * slots unprogrammed on the path actually in use.
+			 */
+			unsigned int codec_slot[2] = { !j, j };
+
+			ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
+							  2, codec_slot);
+			if (ret < 0) {
+				dev_err(rtd->dev, "MI2S channel map err:%d\n",
+					ret);
+				return ret;
+			}
+
 			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
 			/* CS35L41_CLKID_SCLK=0: configure PLL to lock on BCLK */
 			snd_soc_dai_set_sysclk(codec_dai, 0, MI2S_BCLK_RATE,

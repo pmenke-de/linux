@@ -903,7 +903,12 @@
 	clock-frequency = <400000>;
 	status = "okay";
 
-	/* Receiver - Right channel */
+	/*
+	 * Loudspeaker -- cirrus,right-channel-amp in the vendor tree. Powering
+	 * this one down is what silences the bottom speaker. Note the "RCV"
+	 * prefix reads like the receiver and is not: renaming it would rename
+	 * every control userspace already asks for, so it stands.
+	 */
 	cs35l41_speaker: speaker-amp@40 {
 		compatible = "cirrus,cs35l41";
 		reg = <0x40>;
@@ -925,7 +930,7 @@
 		#sound-dai-cells = <1>;
 	};
 
-	/* Receiver - Left channel */
+	/* Receiver (earpiece) -- prefixed LCV, see above. */
 	cs35l41_rcv: speaker-amp@42 {
 		compatible = "cirrus,cs35l41";
 		reg = <0x42>;
