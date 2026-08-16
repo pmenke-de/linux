@@ -155,6 +155,22 @@
 		regulator-max-microvolt = <3700000>;
 	};
 
+	/*
+	 * The wide camera's analog rail is not a PMIC LDO but a discrete one
+	 * switched by a PM8150L GPIO. The 135 us is the ramp the vendor
+	 * firmware waits out before touching the sensor.
+	 */
+	vreg_camera_wide_vana: camera-wide-vana-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_camera_wide_vana";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		startup-delay-us = <135>;
+		enable-active-high;
+		gpio = <&pm8150l_gpios 1 GPIO_ACTIVE_HIGH>;
+		vin-supply = <&vreg_bob>;
+	};
+
 	/* S6c is really ebi.lvl but it's there for supply map completeness sake. */
 	vreg_s6c_0p88: smpc6-regulator {
 		compatible = "regulator-fixed";
@@ -1132,6 +1148,16 @@
 	vdda-pll-supply = <&vreg_l9a_1p2>;
 
 	ports {
+		/* The wide camera is wired to CSIPHY0, over three lanes. */
+		port@0 {
+			csiphy0_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1 2>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&s5khmx_ep>;
+			};
+		};
+
 		/* The ultra-wide is wired to CSIPHY2. */
 		port@2 {
 			csiphy2_ep: endpoint {
@@ -1141,6 +1167,52 @@
 				remote-endpoint = <&ov13b10_ep>;
 			};
 		};
+	};
+};
+
+&cci0 {
+	status = "okay";
+};
+
+&cci0_i2c0 {
+	/* Rear wide, 108 Mpixel. Global SKU; the China SKU has an IMX682 here. */
+	camera@3d {
+		compatible = "samsung,s5khmx";
+		reg = <0x3d>;
+
+		avdd-supply = <&vreg_camera_wide_vana>;
+		dvdd-supply = <&vreg_l1p>;
+		dovdd-supply = <&vreg_l1c_1p8>;
+
+		clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 93 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk0_default>, <&camera_wide_active>;
+
+		orientation = <1>; /* Rear facing */
+		rotation = <270>;
+
+		lens-focus = <&camera_wide_vcm>;
+
+		port {
+			s5khmx_ep: endpoint {
+				data-lanes = <1 2 3>;
+				link-frequencies = /bits/ 64 <412530000 1233200000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
+	};
+
+	camera_wide_vcm: focus@c {
+		compatible = "dongwoon,dw9800-vcm";
+		reg = <0x0c>;
+
+		vdd-supply = <&vreg_l7p>;
 	};
 };
 
@@ -1505,6 +1577,20 @@
 	 * MCLK2 feeds the ultra-wide sensor. The SoC dtsi carries groups for
 	 * MCLK0, 1 and 3 only, so this one is described here.
 	 */
+	cam_mclk0_default: cam-mclk0-default-state {
+		pins = "gpio94";
+		function = "cam_mclk";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	camera_wide_active: camera-wide-active-state {
+		pins = "gpio93";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
 	cam_mclk2_default: cam-mclk2-default-state {
 		pins = "gpio96";
 		function = "cam_mclk";
