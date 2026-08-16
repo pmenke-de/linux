@@ -793,6 +793,13 @@ config VIDEO_S5K6A3
 	  This is a V4L2 sensor driver for Samsung S5K6A3 raw
 	  camera sensor.
 
+config VIDEO_S5KHMX
+	tristate "Samsung S5KHMX sensor support"
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the Samsung
+	  S5KHMX 108 Mpixel camera sensor.
+
 config VIDEO_S5KJN1
 	tristate "Samsung S5KJN1 sensor support"
 	select V4L2_CCI_I2C
