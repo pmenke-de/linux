@@ -1148,14 +1148,23 @@
 };
 
 
+/*
+ * Nothing is wired to PCIe1 on this board, and the vendor tree disables it for
+ * the same reason. Leaving it enabled is not merely useless: its CLKREQ pin is
+ * GPIO 83, which is the NFC enable line here, so the controller claims the pin
+ * first and the NFC part can never be brought out of reset --
+ *
+ *   pin GPIO_83 already requested by 1c08000.pcie
+ *   nxp-nci_i2c 1-0028: NFC: Failed to get EN gpio
+ */
 &pcie1 {
-	status = "okay";
+	status = "disabled";
 };
 
 &pcie1_phy {
 	vdda-phy-supply = <&vreg_l5a_0p88>;
 	vdda-pll-supply = <&vreg_l9a_1p2>;
-	status = "okay";
+	status = "disabled";
 };
 
 &pcie2 {
