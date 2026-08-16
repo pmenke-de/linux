@@ -1158,6 +1158,16 @@
 			};
 		};
 
+		/* The macro camera is wired to CSIPHY1, over two lanes. */
+		port@1 {
+			csiphy1_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&s5k5e9_ep>;
+			};
+		};
+
 		/* The ultra-wide is wired to CSIPHY2. */
 		port@2 {
 			csiphy2_ep: endpoint {
@@ -1165,6 +1175,16 @@
 				data-lanes = <0 1 2 3>;
 				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
 				remote-endpoint = <&ov13b10_ep>;
+			};
+		};
+
+		/* The front camera is wired to CSIPHY4. */
+		port@4 {
+			csiphy4_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&s5k3t2_ep>;
 			};
 		};
 	};
@@ -1216,6 +1236,48 @@
 	};
 };
 
+&cci0_i2c1 {
+	/* Rear macro, 5 Mpixel. */
+	camera@2d {
+		compatible = "samsung,s5k5e9";
+		reg = <0x2d>;
+
+		avdd-supply = <&vreg_l5p>;
+		dvdd-supply = <&vreg_l3c_0p8>;
+		dovdd-supply = <&vreg_l1c_1p8>;
+
+		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 92 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk1_default>, <&camera_macro_active>;
+
+		orientation = <1>; /* Rear facing */
+		rotation = <270>;
+
+		lens-focus = <&camera_macro_vcm>;
+
+		port {
+			s5k5e9_ep: endpoint {
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <175200000>;
+				remote-endpoint = <&csiphy1_ep>;
+			};
+		};
+	};
+
+	camera_macro_vcm: focus@c {
+		compatible = "dongwoon,dw9800-vcm";
+		reg = <0x0c>;
+
+		vdd-supply = <&vreg_l7p>;
+	};
+};
+
 /* The ultra-wide sits on CCI1 master 0. */
 &cci1 {
 	status = "okay";
@@ -1249,6 +1311,39 @@
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <560000000>;
 				remote-endpoint = <&csiphy2_ep>;
+			};
+		};
+	};
+};
+
+&cci1_i2c1 {
+	/* Front camera, 20 Mpixel. */
+	camera@10 {
+		compatible = "samsung,s5k3t2";
+		reg = <0x10>;
+
+		avdd-supply = <&vreg_l3p>;
+		dvdd-supply = <&vreg_l2c_1p2>;
+		dovdd-supply = <&vreg_l1c_1p8>;
+
+		clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk4_default>, <&camera_front_active>;
+
+		orientation = <0>; /* Front facing */
+		rotation = <90>;
+
+		port {
+			s5k3t2_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <248320000 716800000 240000000>;
+				remote-endpoint = <&csiphy4_ep>;
 			};
 		};
 	};
@@ -1586,6 +1681,34 @@
 
 	camera_wide_active: camera-wide-active-state {
 		pins = "gpio93";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_mclk1_default: cam-mclk1-default-state {
+		pins = "gpio95";
+		function = "cam_mclk";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	camera_macro_active: camera-macro-active-state {
+		pins = "gpio92";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_mclk4_default: cam-mclk4-default-state {
+		pins = "gpio98";
+		function = "cam_mclk";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	camera_front_active: camera-front-active-state {
+		pins = "gpio109";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
