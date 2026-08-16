@@ -9,6 +9,8 @@
 #include <dt-bindings/sound/qcom,q6asm.h>
 #include <dt-bindings/usb/pd.h>
 #include <dt-bindings/phy/phy.h>
+#include <dt-bindings/clock/qcom,camcc-sm8250.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include "sm8250.dtsi"
 #include "pm8150.dtsi"
 #include "pm8150b.dtsi"
@@ -1021,6 +1023,165 @@
 	};
 };
 
+/* ----- Cameras ----- */
+
+/*
+ * Only the ultra-wide is described. The board has four sensors, but the other
+ * three -- Sony IMX682 or Samsung S5KHMX (wide, depending on SKU), Samsung
+ * S5K5E9 (macro) and Samsung S5K3T2 (front) -- have no upstream subdev driver,
+ * so there is nothing for a node to bind to yet.
+ *
+ * What this gets you is raw Bayer over V4L2. The processing that makes the
+ * stock camera look like it does is Qualcomm's out-of-tree Spectra stack and is
+ * not part of camss.
+ */
+
+/* Camera PMIC: seven LDOs feeding the sensors, on QUP SE16. */
+&i2c16 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	pm8008: pmic@8 {
+		compatible = "qcom,pm8008";
+		reg = <0x8>;
+
+		interrupts-extended = <&tlmm 84 IRQ_TYPE_EDGE_RISING>;
+		reset-gpios = <&tlmm 77 GPIO_ACTIVE_LOW>;
+
+		vdd-l1-l2-supply = <&vreg_s8c_1p35>;
+		vdd-l3-l4-supply = <&vreg_bob>;
+		vdd-l5-supply = <&vreg_bob>;
+		vdd-l6-supply = <&vreg_bob>;
+		vdd-l7-supply = <&vreg_bob>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&pm8008_int_default>, <&pm8008_reset_default>;
+
+		gpio-controller;
+		#gpio-cells = <2>;
+		gpio-ranges = <&pm8008 0 0 2>;
+
+		interrupt-controller;
+		#interrupt-cells = <2>;
+
+		#thermal-sensor-cells = <0>;
+
+		regulators {
+			/*
+			 * Named for the rails they are on the schematic (L1P..L7P)
+			 * rather than for what they feed, since several sensors
+			 * share them. Only L2P and L4P are consumed so far; the
+			 * rest belong to sensors without drivers.
+			 */
+			/*
+			 * Every bound has to land on the PM8008's 8 mV step
+			 * grid (528 mV + n*8 mV for L1/L2, 1504 mV + n*8 mV for
+			 * L3..L7). The core clamps an out-of-range rail to the
+			 * nearest constraint edge at registration, and an edge
+			 * that is not a real step fails that with -EINVAL.
+			 */
+			vreg_l1p: ldo1 {
+				regulator-name = "vreg_l1p";
+				regulator-min-microvolt = <1056000>;
+				regulator-max-microvolt = <1144000>;
+			};
+
+			vreg_l2p: ldo2 {
+				regulator-name = "vreg_l2p";
+				regulator-min-microvolt = <1200000>;
+				regulator-max-microvolt = <1200000>;
+			};
+
+			vreg_l3p: ldo3 {
+				regulator-name = "vreg_l3p";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			vreg_l4p: ldo4 {
+				regulator-name = "vreg_l4p";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			vreg_l5p: ldo5 {
+				regulator-name = "vreg_l5p";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			vreg_l6p: ldo6 {
+				regulator-name = "vreg_l6p";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			vreg_l7p: ldo7 {
+				regulator-name = "vreg_l7p";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2896000>;
+			};
+		};
+	};
+};
+
+&camss {
+	status = "okay";
+
+	vdda-phy-supply = <&vreg_l5a_0p88>;
+	vdda-pll-supply = <&vreg_l9a_1p2>;
+
+	ports {
+		/* The ultra-wide is wired to CSIPHY2. */
+		port@2 {
+			csiphy2_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1 2 3>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&ov13b10_ep>;
+			};
+		};
+	};
+};
+
+/* The ultra-wide sits on CCI1 master 0. */
+&cci1 {
+	status = "okay";
+};
+
+&cci1_i2c0 {
+	camera@36 {
+		compatible = "ovti,ov13b10";
+		/* Strapped to 0x36, unlike the 0x10 the other sm8250 boards use. */
+		reg = <0x36>;
+
+		avdd-supply = <&vreg_l4p>;
+		dvdd-supply = <&vreg_l2p>;
+		dovdd-supply = <&vreg_l1c_1p8>;
+
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 78 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk2_default>, <&camera_ultra_wide_active>;
+
+		orientation = <1>; /* Rear facing */
+		rotation = <270>;
+
+		port {
+			ov13b10_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <560000000>;
+				remote-endpoint = <&csiphy2_ep>;
+			};
+		};
+	};
+};
+
 /* ----- Display subsystem ----- */
 
 &mdss {
@@ -1340,6 +1501,37 @@
 &tlmm {
 	gpio-reserved-ranges = <28 4>, <40 4>;
 
+	/*
+	 * MCLK2 feeds the ultra-wide sensor. The SoC dtsi carries groups for
+	 * MCLK0, 1 and 3 only, so this one is described here.
+	 */
+	cam_mclk2_default: cam-mclk2-default-state {
+		pins = "gpio96";
+		function = "cam_mclk";
+		drive-strength = <16>;
+		bias-disable;
+	};
+
+	camera_ultra_wide_active: camera-ultra-wide-active-state {
+		pins = "gpio78";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	pm8008_int_default: pm8008-int-default-state {
+		pins = "gpio84";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	pm8008_reset_default: pm8008-reset-default-state {
+		pins = "gpio77";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
 
 	slpi_sensor_irq: slpi-sensor-irq-state {
 		pins = "gpio122";
