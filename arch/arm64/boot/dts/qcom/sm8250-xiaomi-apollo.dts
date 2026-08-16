@@ -899,6 +899,33 @@
 	};
 };
 
+/*
+ * NFC: NXP SN100U on QUP0 SE1, the same bus and interrupt line the other
+ * sm8250 boards use for it. The board differs from the kona default in one
+ * place -- VEN is GPIO 83 here rather than GPIO 6 -- which is exactly what the
+ * vendor tree overrides in apollo-pinctrl.dtsi.
+ *
+ * The vendor's clock-request line (GPIO 7) has no counterpart upstream: its
+ * driver uses it to vote for a reference clock, and this board votes for none
+ * (no clocks/clock-names in the vendor node either), so nothing is dropped by
+ * leaving it out.
+ */
+&i2c1 {
+	clock-frequency = <1000000>;
+	status = "okay";
+
+	nfc@28 {
+		compatible = "nxp,nxp-nci-i2c";
+		reg = <0x28>;
+
+		interrupt-parent = <&tlmm>;
+		interrupts = <111 IRQ_TYPE_EDGE_RISING>;
+
+		enable-gpios = <&tlmm 83 GPIO_ACTIVE_HIGH>;
+		firmware-gpios = <&tlmm 110 GPIO_ACTIVE_HIGH>;
+	};
+};
+
 &i2c3 {
 	clock-frequency = <400000>;
 	status = "okay";
