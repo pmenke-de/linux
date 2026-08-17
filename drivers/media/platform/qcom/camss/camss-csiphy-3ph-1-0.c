@@ -1327,7 +1327,6 @@ static void csiphy_configure_data_rate(struct csiphy_device *csiphy,
 				       struct csiphy_config *cfg, s64 link_freq)
 {
 	const struct csiphy_device_regs *regs = csiphy->regs;
-	struct csiphy_lanes_cfg *c = &cfg->csi2->lane_cfg;
 	u64 data_rate;
 	int i, j;
 
@@ -1336,9 +1335,12 @@ static void csiphy_configure_data_rate(struct csiphy_device *csiphy,
 
 	/*
 	 * C-PHY moves 16 bits per 7 symbols on each trio, which the vendor
-	 * tables express as 2.28 bits per symbol.
+	 * tables express as 2.28 bits per symbol. The table thresholds are
+	 * per trio, as in the vendor driver, where every rate up to the
+	 * 2.5 Gsym/s the PHY tops out at shares one register program - so
+	 * do not multiply by the trio count.
 	 */
-	data_rate = div_u64((u64)link_freq * 228 * c->num_data, 100);
+	data_rate = div_u64((u64)link_freq * 228, 100);
 
 	for (i = 0; i < regs->data_rate_array_size; i++) {
 		const struct csiphy_data_rate_regs *e = &regs->data_rate_regs[i];
