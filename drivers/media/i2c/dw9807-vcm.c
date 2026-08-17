@@ -7,6 +7,7 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 
@@ -42,6 +43,13 @@ struct dw9807_device {
 	struct v4l2_ctrl_handler ctrls_vcm;
 	struct v4l2_subdev sd;
 	u16 current_val;
+	/*
+	 * Boards that gate the motor supply, or power the bus pull-ups from a
+	 * camera rail, need those switched on before the chip answers at all.
+	 * Where a rail is permanently up the supply is absent and stays NULL.
+	 */
+	struct regulator *vdd;
+	struct regulator *vio;
 };
 
 static inline struct dw9807_device *sd_to_dw9807_vcm(
@@ -185,6 +193,24 @@ static int dw9807_probe(struct i2c_client *client)
 	if (dw9807_dev == NULL)
 		return -ENOMEM;
 
+	dw9807_dev->vdd = devm_regulator_get_optional(&client->dev, "vdd");
+	if (IS_ERR(dw9807_dev->vdd)) {
+		if (PTR_ERR(dw9807_dev->vdd) != -ENODEV)
+			return dev_err_probe(&client->dev,
+					     PTR_ERR(dw9807_dev->vdd),
+					     "cannot get vdd regulator\n");
+		dw9807_dev->vdd = NULL;
+	}
+
+	dw9807_dev->vio = devm_regulator_get_optional(&client->dev, "vio");
+	if (IS_ERR(dw9807_dev->vio)) {
+		if (PTR_ERR(dw9807_dev->vio) != -ENODEV)
+			return dev_err_probe(&client->dev,
+					     PTR_ERR(dw9807_dev->vio),
+					     "cannot get vio regulator\n");
+		dw9807_dev->vio = NULL;
+	}
+
 	v4l2_i2c_subdev_init(&dw9807_dev->sd, client, &dw9807_ops);
 	dw9807_dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	dw9807_dev->sd.internal_ops = &dw9807_int_ops;
@@ -203,9 +229,17 @@ static int dw9807_probe(struct i2c_client *client)
 	if (rval < 0)
 		goto err_cleanup;
 
-	pm_runtime_set_active(&client->dev);
-	pm_runtime_enable(&client->dev);
-	pm_runtime_idle(&client->dev);
+	if (dw9807_dev->vdd || dw9807_dev->vio) {
+		/*
+		 * The chip is unpowered until its supplies are switched on,
+		 * so start suspended and let the first user power it up.
+		 */
+		pm_runtime_enable(&client->dev);
+	} else {
+		pm_runtime_set_active(&client->dev);
+		pm_runtime_enable(&client->dev);
+		pm_runtime_idle(&client->dev);
+	}
 
 	return 0;
 
@@ -254,6 +288,11 @@ static int __maybe_unused dw9807_vcm_suspend(struct device *dev)
 		return ret;
 	}
 
+	if (dw9807_dev->vdd)
+		regulator_disable(dw9807_dev->vdd);
+	if (dw9807_dev->vio)
+		regulator_disable(dw9807_dev->vio);
+
 	return 0;
 }
 
@@ -271,11 +310,24 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
 	const char tx_data[2] = { DW9807_CTL_ADDR, 0x00 };
 	int ret, val;
 
+	if (dw9807_dev->vio) {
+		ret = regulator_enable(dw9807_dev->vio);
+		if (ret < 0)
+			return ret;
+	}
+	if (dw9807_dev->vdd) {
+		ret = regulator_enable(dw9807_dev->vdd);
+		if (ret < 0)
+			goto disable_vio;
+	}
+	if (dw9807_dev->vdd || dw9807_dev->vio)
+		usleep_range(1000, 2000);
+
 	/* Power on */
 	ret = i2c_master_send(client, tx_data, sizeof(tx_data));
 	if (ret < 0) {
 		dev_err(&client->dev, "I2C write CTL fail ret = %d\n", ret);
-		return ret;
+		goto disable_vdd;
 	}
 
 	for (val = dw9807_dev->current_val % DW9807_CTRL_STEPS;
@@ -289,9 +341,18 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
 	}
 
 	return 0;
+
+disable_vdd:
+	if (dw9807_dev->vdd)
+		regulator_disable(dw9807_dev->vdd);
+disable_vio:
+	if (dw9807_dev->vio)
+		regulator_disable(dw9807_dev->vio);
+	return ret;
 }
 
 static const struct of_device_id dw9807_of_table[] = {
+	{ .compatible = "dongwoon,dw9800-vcm" },
 	{ .compatible = "dongwoon,dw9807-vcm" },
 	/* Compatibility for older firmware, NEVER USE THIS IN FIRMWARE! */
 	{ .compatible = "dongwoon,dw9807" },
