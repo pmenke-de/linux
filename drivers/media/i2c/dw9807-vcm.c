@@ -7,7 +7,6 @@
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
-#include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 
@@ -43,12 +42,6 @@ struct dw9807_device {
 	struct v4l2_ctrl_handler ctrls_vcm;
 	struct v4l2_subdev sd;
 	u16 current_val;
-	/*
-	 * Boards that gate the motor supply need it switched on before the
-	 * chip answers at all; where it is always on the supply is absent and
-	 * this stays NULL.
-	 */
-	struct regulator *vdd;
 };
 
 static inline struct dw9807_device *sd_to_dw9807_vcm(
@@ -192,21 +185,6 @@ static int dw9807_probe(struct i2c_client *client)
 	if (dw9807_dev == NULL)
 		return -ENOMEM;
 
-	dw9807_dev->vdd = devm_regulator_get_optional(&client->dev, "vdd");
-	if (IS_ERR(dw9807_dev->vdd)) {
-		if (PTR_ERR(dw9807_dev->vdd) != -ENODEV)
-			return dev_err_probe(&client->dev,
-					     PTR_ERR(dw9807_dev->vdd),
-					     "cannot get vdd regulator\n");
-
-		dw9807_dev->vdd = NULL;
-	} else {
-		rval = regulator_enable(dw9807_dev->vdd);
-		if (rval < 0)
-			return dev_err_probe(&client->dev, rval,
-					     "cannot enable vdd regulator\n");
-	}
-
 	v4l2_i2c_subdev_init(&dw9807_dev->sd, client, &dw9807_ops);
 	dw9807_dev->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 	dw9807_dev->sd.internal_ops = &dw9807_int_ops;
@@ -232,8 +210,6 @@ static int dw9807_probe(struct i2c_client *client)
 	return 0;
 
 err_cleanup:
-	if (dw9807_dev->vdd)
-		regulator_disable(dw9807_dev->vdd);
 	v4l2_ctrl_handler_free(&dw9807_dev->ctrls_vcm);
 	media_entity_cleanup(&dw9807_dev->sd.entity);
 
@@ -248,9 +224,6 @@ static void dw9807_remove(struct i2c_client *client)
 	pm_runtime_disable(&client->dev);
 
 	dw9807_subdev_cleanup(dw9807_dev);
-
-	if (dw9807_dev->vdd)
-		regulator_disable(dw9807_dev->vdd);
 }
 
 /*
@@ -319,7 +292,6 @@ static int  __maybe_unused dw9807_vcm_resume(struct device *dev)
 }
 
 static const struct of_device_id dw9807_of_table[] = {
-	{ .compatible = "dongwoon,dw9800-vcm" },
 	{ .compatible = "dongwoon,dw9807-vcm" },
 	/* Compatibility for older firmware, NEVER USE THIS IN FIRMWARE! */
 	{ .compatible = "dongwoon,dw9807" },
@@ -345,5 +317,5 @@ static struct i2c_driver dw9807_i2c_driver = {
 module_i2c_driver(dw9807_i2c_driver);
 
 MODULE_AUTHOR("Chiang, Alan");
-MODULE_DESCRIPTION("DW9807/DW9800 VCM driver");
+MODULE_DESCRIPTION("DW9807 VCM driver");
 MODULE_LICENSE("GPL v2");

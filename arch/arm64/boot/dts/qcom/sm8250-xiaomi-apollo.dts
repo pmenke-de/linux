@@ -1238,10 +1238,15 @@
 	};
 
 	camera_wide_vcm: focus@c {
-		compatible = "dongwoon,dw9800-vcm";
+		compatible = "asahi-kasei,ak7375";
 		reg = <0x0c>;
 
 		vdd-supply = <&vreg_l7p>;
+		/*
+		 * The bus pull-ups sit on the camera IO rail; without it the
+		 * chip cannot be addressed at all.
+		 */
+		vio-supply = <&vreg_l1c_1p8>;
 	};
 };
 
@@ -1280,10 +1285,11 @@
 	};
 
 	camera_macro_vcm: focus@c {
-		compatible = "dongwoon,dw9800-vcm";
+		compatible = "dongwoon,dw9714";
 		reg = <0x0c>;
 
-		vdd-supply = <&vreg_l7p>;
+		vcc-supply = <&vreg_l7p>;
+		vin-supply = <&vreg_l1c_1p8>;
 	};
 };
 
