@@ -113,6 +113,16 @@ config OF_OVERLAY
 	  While this option is selected automatically when needed, you can
 	  enable it manually to improve device tree unit test coverage.
 
+config OF_OVERLAY_LOADER
+	tristate "Device Tree overlay loader for userspace"
+	depends on OF_OVERLAY && DEBUG_FS
+	help
+	  Expose the overlay core through debugfs so overlays can be applied
+	  from userspace at runtime, which saves a rebuild and a reboot for
+	  every device tree change while bringing a board up.
+
+	  This is a development aid; say N on production systems.
+
 config OF_OVERLAY_KUNIT_TEST
 	tristate "Device Tree overlay KUnit tests" if !KUNIT_ALL_TESTS
 	depends on KUNIT
