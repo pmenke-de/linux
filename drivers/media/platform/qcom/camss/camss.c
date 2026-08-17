@@ -4754,11 +4754,13 @@ static int camss_parse_endpoint_node(struct device *dev,
 	if (ret)
 		return ret;
 
-	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
-	 */
-	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
+	switch (vep.bus_type) {
+	case V4L2_MBUS_CSI2_DPHY:
+		break;
+	case V4L2_MBUS_CSI2_CPHY:
+		csd->interface.csi2.cphy = true;
+		break;
+	default:
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
 	}
@@ -4766,8 +4768,14 @@ static int camss_parse_endpoint_node(struct device *dev,
 	csd->interface.csiphy_id = vep.base.port;
 
 	mipi_csi2 = &vep.bus.mipi_csi2;
-	lncfg->clk.pos = mipi_csi2->clock_lane;
-	lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	/*
+	 * C-PHY embeds the clock in each trio, so data-lanes describes trios
+	 * and there is no clock lane to configure.
+	 */
+	if (!csd->interface.csi2.cphy) {
+		lncfg->clk.pos = mipi_csi2->clock_lane;
+		lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	}
 	lncfg->num_data = mipi_csi2->num_data_lanes;
 
 	lncfg->data = devm_kcalloc(dev,

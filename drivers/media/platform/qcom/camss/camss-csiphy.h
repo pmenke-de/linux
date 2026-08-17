@@ -30,7 +30,7 @@ struct csiphy_lane {
 
 /**
  * struct csiphy_lanes_cfg - CSIPHY lanes configuration
- * @num_data: number of data lanes
+ * @num_data: number of data lanes, or of trios in C-PHY mode
  * @data:     data lanes configuration
  * @clk:      clock lane configuration (only for D-PHY)
  */
@@ -42,6 +42,8 @@ struct csiphy_lanes_cfg {
 
 struct csiphy_csi2_cfg {
 	struct csiphy_lanes_cfg lane_cfg;
+	/* C-PHY carries the clock in the data trios, so there is no clock lane */
+	bool cphy;
 };
 
 struct csiphy_config {
@@ -88,9 +90,24 @@ struct csiphy_subdev_resources {
 	const struct csiphy_formats *formats;
 };
 
+struct csiphy_data_rate_regs {
+	u64 bandwidth;
+	const struct csiphy_lane_regs *regs;
+	int array_size;
+};
+
 struct csiphy_device_regs {
 	const struct csiphy_lane_regs *lane_regs;
 	int lane_array_size;
+	/* C-PHY register sequence, NULL where the SoC support is not written */
+	const struct csiphy_lane_regs *lane_regs_cphy;
+	int lane_array_size_cphy;
+	/*
+	 * Some settings depend on how fast the link runs; the first entry whose
+	 * bandwidth covers the required data rate is applied.
+	 */
+	const struct csiphy_data_rate_regs *data_rate_regs;
+	int data_rate_array_size;
 	u32 offset;
 	u32 common_status_offset;
 };
