@@ -49,6 +49,13 @@
 #define CSIPHY_3PH_CMN_CSI_COMMON_STATUSn(offset, common_status_offset, n) \
 	((offset) + (common_status_offset) + 0x4 * (n))
 
+/*
+ * The C-PHY T3 settle count, in the PHY's own counter units. Taken from the
+ * same working-stream dump; the D-PHY formula below computes a value for a
+ * signalling scheme this link does not use.
+ */
+#define CSIPHY_CPHY_SETTLE_CNT		0x1d
+
 #define CSIPHY_DEFAULT_PARAMS		0
 #define CSIPHY_LANE_ENABLE		1
 #define CSIPHY_SETTLE_CNT_LOWER_BYTE	2
@@ -990,7 +997,12 @@ static irqreturn_t csiphy_isr(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-/* 14nm 3PH v 1.2.1 C-PHY mode, three trios; ported from the vendor tables */
+/*
+ * 14nm 3PH v 1.2.1 C-PHY mode, three trios. Ported from the vendor tables and
+ * then corrected against a register dump of a live, working vendor stream:
+ * the kernel the device ships differs from its published source in several
+ * values, and the dump is what the hardware demonstrably works with.
+ */
 static const struct
 csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	/* trio 0 */
@@ -1002,7 +1014,7 @@ csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	{0x0994, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0998, 0x1A, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x098C, 0xAF, 0x00, CSIPHY_DEFAULT_PARAMS},
-	{0x0168, 0xA0, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0168, 0xAC, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x016C, 0x25, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0104, 0x06, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x010C, 0x12, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
@@ -1027,6 +1039,12 @@ csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	{0x0800, 0x0E, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0984, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x09B4, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0980, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0988, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x09C0, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x09C4, 0x7D, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x09C8, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x09D0, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
 	/* trio 1 */
 	{0x035C, 0x46, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0A90, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
@@ -1036,7 +1054,7 @@ csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	{0x0A94, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0A98, 0x1A, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0A8C, 0xAF, 0x00, CSIPHY_DEFAULT_PARAMS},
-	{0x0368, 0xA0, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0368, 0xAC, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x036C, 0x25, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0304, 0x06, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x030C, 0x12, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
@@ -1061,6 +1079,12 @@ csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	{0x0800, 0x0E, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0A84, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0AB4, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A80, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0A88, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AC0, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AC4, 0x7D, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AC8, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0AD0, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
 	/* trio 2 */
 	{0x055C, 0x46, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0B90, 0x00, 0x00, CSIPHY_DEFAULT_PARAMS},
@@ -1070,7 +1094,7 @@ csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	{0x0B94, 0x08, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0B98, 0x1A, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0B8C, 0xAF, 0x00, CSIPHY_DEFAULT_PARAMS},
-	{0x0568, 0xA0, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0568, 0xAC, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x056C, 0x25, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0504, 0x06, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x050C, 0x12, 0x00, CSIPHY_SETTLE_CNT_LOWER_BYTE},
@@ -1095,6 +1119,12 @@ csiphy_lane_regs lane_regs_sm8250_cphy[] = {
 	{0x0800, 0x0E, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0B84, 0x20, 0x00, CSIPHY_DEFAULT_PARAMS},
 	{0x0BB4, 0x03, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0B80, 0x60, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0B88, 0x05, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0BC0, 0x80, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0BC4, 0x7D, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0BC8, 0x7F, 0x00, CSIPHY_DEFAULT_PARAMS},
+	{0x0BD0, 0x01, 0x00, CSIPHY_DEFAULT_PARAMS},
 };
 
 /*
@@ -1333,10 +1363,15 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	struct csiphy_lanes_cfg *c = &cfg->csi2->lane_cfg;
 	struct csiphy_device_regs *regs = csiphy->regs;
 	u8 settle_cnt;
+	u8 enable_mask;
 	u8 val;
 	int i;
 
-	settle_cnt = csiphy_settle_cnt_calc(link_freq, csiphy->timer_clk_rate);
+	if (cfg->csi2->cphy)
+		settle_cnt = CSIPHY_CPHY_SETTLE_CNT;
+	else
+		settle_cnt = csiphy_settle_cnt_calc(link_freq,
+						    csiphy->timer_clk_rate);
 
 	/*
 	 * D-PHY takes a lane per even bit plus the clock lane, while C-PHY
@@ -1355,17 +1390,39 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));
 
+	enable_mask = val;
+
 	val = CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_COMMON_PWRDN_B;
 	writel_relaxed(val, csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
 
-	val = 0x02;
-	writel_relaxed(val, csiphy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
+	if (cfg->csi2->cphy) {
+		/*
+		 * The three-phase common configuration, from the same
+		 * working-stream dump: a different mode word in CTRL7, the
+		 * trio mask mirrored into CTRL55, and two words the D-PHY
+		 * path never touches. CTRL0 is set to the value the per-trio
+		 * sequence expects to find before it reprograms it.
+		 */
+		writel_relaxed(0x52, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
+		writel_relaxed(0x02, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+		writel_relaxed(enable_mask, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 55));
+		writel_relaxed(0x0e, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 60));
+		writel_relaxed(0xcf, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 63));
+	} else {
+		val = 0x02;
+		writel_relaxed(val, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
 
-	val = 0x00;
-	writel_relaxed(val, csiphy->base +
-		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+		val = 0x00;
+		writel_relaxed(val, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+	}
 
 	if (cfg->csi2->cphy) {
 		csiphy_gen2_config_lanes(csiphy, regs->lane_regs_cphy,
