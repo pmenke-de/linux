@@ -1153,12 +1153,14 @@
 	vdda-pll-supply = <&vreg_l9a_1p2>;
 
 	ports {
-		/* The wide camera is wired to CSIPHY0, over three lanes. */
+		/*
+		 * The wide camera speaks C-PHY over three trios; the clock is
+		 * carried in the trios, so there is no clock lane.
+		 */
 		port@0 {
 			csiphy0_ep: endpoint {
-				clock-lanes = <7>;
 				data-lanes = <0 1 2>;
-				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
 				remote-endpoint = <&s5khmx_ep>;
 			};
 		};
@@ -1227,7 +1229,9 @@
 		port {
 			s5khmx_ep: endpoint {
 				data-lanes = <1 2 3>;
-				link-frequencies = /bits/ 64 <687550000 1003200000>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				/* Symbol rate, not a bit clock: C-PHY. */
+				link-frequencies = /bits/ 64 <603114035>;
 				remote-endpoint = <&csiphy0_ep>;
 			};
 		};

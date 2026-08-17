@@ -66,13 +66,11 @@
  * carries an index into this menu rather than there being a single frequency.
  */
 enum {
-	S5KHMX_LINK_FREQ_687MHZ,
-	S5KHMX_LINK_FREQ_1003MHZ,
+	S5KHMX_LINK_FREQ_603MHZ,
 };
 
 static const s64 s5khmx_link_freq_menu[] = {
-	[S5KHMX_LINK_FREQ_687MHZ] = 687550000,
-	[S5KHMX_LINK_FREQ_1003MHZ] = 1003200000,
+	[S5KHMX_LINK_FREQ_603MHZ] = 603114035,
 };
 
 /* Ordered so the flip controls can pick a code by index. */
@@ -580,191 +578,6 @@ static const struct cci_reg_sequence s5khmx_3008x2256_regs[] = {
 	{ CCI_REG16(0xf472), 0x0010 },
 };
 
-/* 24 Mpixel readout. */
-static const struct cci_reg_sequence s5khmx_5760x4320_regs[] = {
-	{ CCI_REG16(0x6028), 0x2000 },
-	{ CCI_REG16(0x0136), 0x1300 },
-	{ CCI_REG16(0x013e), 0x00c8 },
-	{ CCI_REG16(0x0304), 0x0003 },
-	{ CCI_REG16(0x0306), 0x010c },
-	{ CCI_REG16(0x030c), 0x0000 },
-	{ CCI_REG16(0x0302), 0x0003 },
-	{ CCI_REG16(0x0300), 0x0002 },
-	{ CCI_REG16(0x030e), 0x0003 },
-	{ CCI_REG16(0x0310), 0x0113 },
-	{ CCI_REG16(0x0312), 0x0002 },
-	{ CCI_REG16(0x0308), 0x0008 },
-	{ CCI_REG16(0x030a), 0x0002 },
-	{ CCI_REG16(0x602a), 0x23be },
-	{ CCI_REG16(0x6f12), 0x0092 },
-	{ CCI_REG16(0x0344), 0x0c48 },
-	{ CCI_REG16(0x0346), 0x0938 },
-	{ CCI_REG16(0x0348), 0x22c7 },
-	{ CCI_REG16(0x034a), 0x1a17 },
-	{ CCI_REG16(0x0350), 0x0000 },
-	{ CCI_REG16(0x0352), 0x0000 },
-	{ CCI_REG16(0x034c), 0x1680 },
-	{ CCI_REG16(0x034e), 0x10e0 },
-	{ CCI_REG16(0x0900), 0x0111 },
-	{ CCI_REG16(0x0400), 0x1010 },
-	{ CCI_REG16(0x0404), 0x1000 },
-	{ CCI_REG16(0x0380), 0x0001 },
-	{ CCI_REG16(0x0382), 0x0001 },
-	{ CCI_REG16(0x0384), 0x0001 },
-	{ CCI_REG16(0x0386), 0x0001 },
-	{ CCI_REG16(0x602a), 0x38e0 },
-	{ CCI_REG16(0x6f12), 0x0101 },
-	{ CCI_REG16(0x602a), 0x38e6 },
-	{ CCI_REG16(0x6f12), 0x0208 },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0x602a), 0x120e },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x1216 },
-	{ CCI_REG16(0x6f12), 0x0040 },
-	{ CCI_REG16(0x602a), 0x4630 },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x0342), 0x3090 },
-	{ CCI_REG16(0x0340), 0x1160 },
-	{ CCI_REG16(0x0114), 0x0200 },
-	{ CCI_REG16(0x0118), 0x0001 },
-	{ CCI_REG16(0x011c), 0x0101 },
-	{ CCI_REG16(0x081c), 0x000c },
-	{ CCI_REG16(0x081e), 0x0c00 },
-	{ CCI_REG16(0x602a), 0x127a },
-	{ CCI_REG16(0x6f12), 0x0300 },
-	{ CCI_REG16(0x602a), 0x1f2e },
-	{ CCI_REG16(0x6f12), 0x2020 },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0x602a), 0x39a2 },
-	{ CCI_REG16(0x6f12), 0x0003 },
-	{ CCI_REG16(0x602a), 0x3902 },
-	{ CCI_REG16(0x6f12), 0x0101 },
-	{ CCI_REG16(0x0d00), 0x0101 },
-	{ CCI_REG16(0x0d02), 0x0001 },
-	{ CCI_REG16(0x0d04), 0x0002 },
-	{ CCI_REG16(0x602a), 0x4afe },
-	{ CCI_REG16(0x6f12), 0x0001 },
-	{ CCI_REG16(0x602a), 0x4310 },
-	{ CCI_REG16(0x6f12), 0x0004 },
-	{ CCI_REG16(0x6f12), 0x1004 },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0x602a), 0x4318 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x4396 },
-	{ CCI_REG16(0x6f12), 0x0005 },
-	{ CCI_REG16(0x602a), 0x43c0 },
-	{ CCI_REG16(0x6f12), 0x0108 },
-	{ CCI_REG16(0x602a), 0x434e },
-	{ CCI_REG16(0x6f12), 0x0202 },
-	{ CCI_REG16(0x6f12), 0x0302 },
-	{ CCI_REG16(0x602a), 0x2920 },
-	{ CCI_REG16(0x6f12), 0x03c0 },
-	{ CCI_REG16(0x6f12), 0x03c8 },
-	{ CCI_REG16(0x6f12), 0x06d0 },
-	{ CCI_REG16(0x6f12), 0x06d8 },
-	{ CCI_REG16(0x6f12), 0x03e0 },
-	{ CCI_REG16(0x6f12), 0x03e8 },
-	{ CCI_REG16(0x6f12), 0x06f0 },
-	{ CCI_REG16(0x6f12), 0x06f8 },
-	{ CCI_REG16(0x602a), 0x23ce },
-	{ CCI_REG16(0x6f12), 0x009c },
-	{ CCI_REG16(0x602a), 0x275a },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x44ec },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0x602a), 0x3e36 },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0x602a), 0x5dd0 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x5f60 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x5f66 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x44b2 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x44e4 },
-	{ CCI_REG16(0x6f12), 0x0400 },
-	{ CCI_REG16(0x6f12), 0x0400 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x44dc },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0x43f2 },
-	{ CCI_REG16(0x6f12), 0x0123 },
-	{ CCI_REG16(0x602a), 0x43fa },
-	{ CCI_REG16(0x6f12), 0x3210 },
-	{ CCI_REG16(0x602a), 0x4412 },
-	{ CCI_REG16(0x6f12), 0x0123 },
-	{ CCI_REG16(0x602a), 0x441a },
-	{ CCI_REG16(0x6f12), 0x3210 },
-	{ CCI_REG16(0x602a), 0x3f82 },
-	{ CCI_REG16(0x6f12), 0x0101 },
-	{ CCI_REG16(0x602a), 0x3af0 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x3fff },
-	{ CCI_REG16(0x6f12), 0x3fff },
-	{ CCI_REG16(0x602a), 0x3972 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x3fff },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x6f12), 0x3fff },
-	{ CCI_REG16(0x0b08), 0x0100 },
-	{ CCI_REG16(0x602a), 0x3954 },
-	{ CCI_REG16(0x6f12), 0x1680 },
-	{ CCI_REG16(0x602a), 0x3958 },
-	{ CCI_REG16(0x6f12), 0x10e0 },
-	{ CCI_REG16(0x602a), 0xba2c },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0xba42 },
-	{ CCI_REG16(0x6f12), 0x0000 },
-	{ CCI_REG16(0x602a), 0xba30 },
-	{ CCI_REG16(0x6f12), 0xf880 },
-	{ CCI_REG16(0x6f12), 0xfd80 },
-	{ CCI_REG16(0x6028), 0x2001 },
-	{ CCI_REG16(0x602a), 0xe664 },
-	{ CCI_REG16(0x6f12), 0x0100 },
-	{ CCI_REG16(0xf472), 0x0012 },
-};
-
 static const struct s5khmx_mode s5khmx_supported_modes[] = {
 	{
 		/* 4x4 binned; the sensible default for preview and stills. */
@@ -772,30 +585,22 @@ static const struct s5khmx_mode s5khmx_supported_modes[] = {
 		.height = 2256,
 		.hts = 16032,
 		.vts = 2373,
-		.link_freq_idx = S5KHMX_LINK_FREQ_687MHZ,
+		.link_freq_idx = S5KHMX_LINK_FREQ_603MHZ,
 		.reg_list = {
 			.regs = s5khmx_3008x2256_regs,
 			.num_regs = ARRAY_SIZE(s5khmx_3008x2256_regs),
-		},
-	},
-	{
-		/* 24 Mpixel readout. */
-		.width = 5760,
-		.height = 4320,
-		.hts = 12432,
-		.vts = 4480,
-		.link_freq_idx = S5KHMX_LINK_FREQ_1003MHZ,
-		.reg_list = {
-			.regs = s5khmx_5760x4320_regs,
-			.num_regs = ARRAY_SIZE(s5khmx_5760x4320_regs),
 		},
 	},
 };
 
 static u64 s5khmx_pixel_rate(const struct s5khmx_mode *mode)
 {
-	return div_u64(s5khmx_link_freq_menu[mode->link_freq_idx] * 2 *
-		       S5KHMX_DATA_LANES, S5KHMX_BITS_PER_SAMPLE);
+	/*
+	 * C-PHY moves 16 bits per 7 symbols on each trio, which works out as
+	 * 2.28 bits per symbol.
+	 */
+	return div_u64(s5khmx_link_freq_menu[mode->link_freq_idx] * 228 *
+		       S5KHMX_DATA_LANES, 100 * S5KHMX_BITS_PER_SAMPLE);
 }
 
 static int s5khmx_set_ctrl(struct v4l2_ctrl *ctrl)
@@ -1118,8 +923,8 @@ static int s5khmx_get_selection(struct v4l2_subdev *sd,
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.left = 0;
 		sel->r.top = 0;
-		sel->r.width = s5khmx_supported_modes[2 - 1].width;
-		sel->r.height = s5khmx_supported_modes[2 - 1].height;
+		sel->r.width = s5khmx_supported_modes[1 - 1].width;
+		sel->r.height = s5khmx_supported_modes[1 - 1].height;
 		return 0;
 	default:
 		return -EINVAL;
@@ -1195,7 +1000,7 @@ static int s5khmx_check_hwcfg(struct s5khmx *s5khmx)
 {
 	struct fwnode_handle *fwnode = dev_fwnode(s5khmx->dev), *ep;
 	struct v4l2_fwnode_endpoint bus_cfg = {
-		.bus_type = V4L2_MBUS_CSI2_DPHY,
+		.bus_type = V4L2_MBUS_CSI2_CPHY,
 	};
 	unsigned long freq_bitmap;
 	int ret;
@@ -1213,7 +1018,7 @@ static int s5khmx_check_hwcfg(struct s5khmx *s5khmx)
 		return ret;
 
 	if (bus_cfg.bus.mipi_csi2.num_data_lanes != S5KHMX_DATA_LANES) {
-		dev_err(s5khmx->dev, "invalid number of data lanes: %u\n",
+		dev_err(s5khmx->dev, "invalid number of data trios: %u\n",
 			bus_cfg.bus.mipi_csi2.num_data_lanes);
 		ret = -EINVAL;
 		goto endpoint_free;
