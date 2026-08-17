@@ -1593,8 +1593,13 @@
 	led-0 {
 		function = LED_FUNCTION_FLASH;
 		color = <LED_COLOR_ID_WHITE>;
-		led-sources = <1>;
-		led-max-microamp = <200000>;
+		/*
+		 * The LED hangs off the second channel: the vendor tree says
+		 * "qcom,id = <1>" and its driver counts channels from zero,
+		 * while led-sources counts from one.
+		 */
+		led-sources = <2>;
+		led-max-microamp = <300000>;
 		flash-max-microamp = <1500000>;
 		flash-max-timeout-us = <1280000>;
 	};
