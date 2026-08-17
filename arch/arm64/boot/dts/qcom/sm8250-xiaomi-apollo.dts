@@ -1158,10 +1158,26 @@
 		 * carried in the trios, so there is no clock lane.
 		 */
 		port@0 {
-			csiphy0_ep: endpoint {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csiphy0_ep: endpoint@0 {
+				reg = <0>;
 				data-lanes = <0 1 2>;
 				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
 				remote-endpoint = <&s5khmx_ep>;
+			};
+
+			/*
+			 * The China SKU's IMX682 sits in the same slot; only
+			 * one wide sensor is ever enabled, and camss skips
+			 * the endpoint of the disabled one.
+			 */
+			csiphy0_imx682_ep: endpoint@1 {
+				reg = <1>;
+				data-lanes = <0 1 2>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				remote-endpoint = <&imx682_ep>;
 			};
 		};
 
@@ -1247,6 +1263,71 @@
 		 * chip cannot be addressed at all.
 		 */
 		vio-supply = <&vreg_l1c_1p8>;
+	};
+
+	/*
+	 * The Mi 10T's China-market (Sunny) main module: IMX682 sensor and
+	 * DW9800 focus motor in the slot the global SKU fills with the
+	 * S5KHMX and AK7375 above. Both variants are described here and
+	 * apollo-camera-variant enables the fitted one at boot from the
+	 * module EEPROM, since a sensor that never probes would stall the
+	 * camss notifier and take every other camera down with it.
+	 */
+	camera@1a {
+		compatible = "sony,imx682";
+		reg = <0x1a>;
+		status = "disabled";
+
+		avdd-supply = <&vreg_camera_wide_vana>;
+		dvdd-supply = <&vreg_l1p>;
+		dovdd-supply = <&vreg_l1c_1p8>;
+
+		clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 93 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk0_default>, <&camera_wide_active>;
+
+		orientation = <1>; /* Rear facing */
+		rotation = <270>;
+
+		lens-focus = <&camera_wide_vcm_dw9800>;
+
+		port {
+			imx682_ep: endpoint {
+				data-lanes = <1 2 3>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				/* Symbol rate, not a bit clock: C-PHY. */
+				link-frequencies = /bits/ 64 <998400000>;
+				remote-endpoint = <&csiphy0_imx682_ep>;
+			};
+		};
+	};
+
+	camera_wide_vcm_dw9800: vcm@c {
+		compatible = "dongwoon,dw9800-vcm";
+		reg = <0x0c>;
+		status = "disabled";
+
+		vdd-supply = <&vreg_l7p>;
+		vio-supply = <&vreg_l1c_1p8>;
+	};
+
+	/*
+	 * The wide module's calibration EEPROM. Always enabled: byte 1 is
+	 * the module integrator id (0x03 Semco, 0x01 Sunny), which is how
+	 * the fitted variant is told apart at boot. The Sunny module's
+	 * 8 KiB part simply wraps when read as this 16 KiB type.
+	 */
+	eeprom@50 {
+		compatible = "atmel,24c128";
+		reg = <0x50>;
+		read-only;
+		vcc-supply = <&vreg_l1c_1p8>;
 	};
 };
 

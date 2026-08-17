@@ -4806,6 +4806,24 @@ static int camss_parse_ports(struct camss *camss)
 
 	fwnode_graph_for_each_endpoint(fwnode, ep) {
 		struct camss_async_subdev *csd;
+		struct fwnode_handle *remote;
+
+		/*
+		 * Boards fitted with one of several camera modules describe
+		 * every option in the device tree and enable the one that is
+		 * populated. An endpoint whose remote is disabled (or absent)
+		 * must not be added to the notifier: its subdev would never
+		 * register, and the notifier would wait for it forever,
+		 * keeping every other camera from probing too.
+		 */
+		remote = fwnode_graph_get_remote_port_parent(ep);
+		if (!remote)
+			continue;
+		if (!fwnode_device_is_available(remote)) {
+			fwnode_handle_put(remote);
+			continue;
+		}
+		fwnode_handle_put(remote);
 
 		csd = v4l2_async_nf_add_fwnode_remote(&camss->notifier, ep,
 						      typeof(*csd));

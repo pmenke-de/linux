@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Xiaomi Mi 10T, Sunny (China-market) main camera module: enable the
+ * IMX682 sensor and DW9800 focus motor in place of the global SKU's
+ * S5KHMX and AK7375. Applied as a runtime overlay at boot by
+ * apollo-camera-variant when the module EEPROM identifies a Sunny
+ * module; the base tree defaults to the Semco parts.
+ */
+/dts-v1/;
+/plugin/;
+
+&{/soc@0/cci@ac4f000/i2c-bus@0/camera@3d} {
+	status = "disabled";
+};
+
+&{/soc@0/cci@ac4f000/i2c-bus@0/focus@c} {
+	status = "disabled";
+};
+
+&{/soc@0/cci@ac4f000/i2c-bus@0/camera@1a} {
+	status = "okay";
+};
+
+&{/soc@0/cci@ac4f000/i2c-bus@0/vcm@c} {
+	status = "okay";
+};
