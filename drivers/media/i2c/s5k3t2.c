@@ -66,15 +66,15 @@
  * carries an index into this menu rather than there being a single frequency.
  */
 enum {
-	S5K3T2_LINK_FREQ_248MHZ,
-	S5K3T2_LINK_FREQ_716MHZ,
-	S5K3T2_LINK_FREQ_240MHZ,
+	S5K3T2_LINK_FREQ_310MHZ,
+	S5K3T2_LINK_FREQ_896MHZ,
+	S5K3T2_LINK_FREQ_300MHZ,
 };
 
 static const s64 s5k3t2_link_freq_menu[] = {
-	[S5K3T2_LINK_FREQ_248MHZ] = 248320000,
-	[S5K3T2_LINK_FREQ_716MHZ] = 716800000,
-	[S5K3T2_LINK_FREQ_240MHZ] = 240000000,
+	[S5K3T2_LINK_FREQ_310MHZ] = 310400000,
+	[S5K3T2_LINK_FREQ_896MHZ] = 896000000,
+	[S5K3T2_LINK_FREQ_300MHZ] = 300000000,
 };
 
 /* Ordered so the flip controls can pick a code by index. */
@@ -634,7 +634,7 @@ static const struct s5k3t2_mode s5k3t2_supported_modes[] = {
 		.height = 1940,
 		.hts = 10880,
 		.vts = 2064,
-		.link_freq_idx = S5K3T2_LINK_FREQ_248MHZ,
+		.link_freq_idx = S5K3T2_LINK_FREQ_310MHZ,
 		.reg_list = {
 			.regs = s5k3t2_2592x1940_regs,
 			.num_regs = ARRAY_SIZE(s5k3t2_2592x1940_regs),
@@ -646,7 +646,7 @@ static const struct s5k3t2_mode s5k3t2_supported_modes[] = {
 		.height = 3880,
 		.hts = 5440,
 		.vts = 4096,
-		.link_freq_idx = S5K3T2_LINK_FREQ_716MHZ,
+		.link_freq_idx = S5K3T2_LINK_FREQ_896MHZ,
 		.reg_list = {
 			.regs = s5k3t2_5184x3880_regs,
 			.num_regs = ARRAY_SIZE(s5k3t2_5184x3880_regs),
@@ -658,7 +658,7 @@ static const struct s5k3t2_mode s5k3t2_supported_modes[] = {
 		.height = 720,
 		.hts = 5664,
 		.vts = 992,
-		.link_freq_idx = S5K3T2_LINK_FREQ_240MHZ,
+		.link_freq_idx = S5K3T2_LINK_FREQ_300MHZ,
 		.reg_list = {
 			.regs = s5k3t2_1280x720_regs,
 			.num_regs = ARRAY_SIZE(s5k3t2_1280x720_regs),

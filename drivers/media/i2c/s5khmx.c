@@ -66,13 +66,13 @@
  * carries an index into this menu rather than there being a single frequency.
  */
 enum {
-	S5KHMX_LINK_FREQ_412MHZ,
-	S5KHMX_LINK_FREQ_1233MHZ,
+	S5KHMX_LINK_FREQ_687MHZ,
+	S5KHMX_LINK_FREQ_1003MHZ,
 };
 
 static const s64 s5khmx_link_freq_menu[] = {
-	[S5KHMX_LINK_FREQ_412MHZ] = 412530000,
-	[S5KHMX_LINK_FREQ_1233MHZ] = 1233200000,
+	[S5KHMX_LINK_FREQ_687MHZ] = 687550000,
+	[S5KHMX_LINK_FREQ_1003MHZ] = 1003200000,
 };
 
 /* Ordered so the flip controls can pick a code by index. */
@@ -129,7 +129,7 @@ struct s5khmx {
 
 /*
  * Unlock sequence: page pointer, firmware version, chip id, then a soft
- * reset. The sensor needs 15 ms after the reset before it accepts the rest.
+ * reset. The sensor needs time to settle before it accepts the rest.
  */
 static const struct cci_reg_sequence s5khmx_unlock_regs[] = {
 	{ CCI_REG16(0x6028), 0x4000 },
@@ -138,7 +138,7 @@ static const struct cci_reg_sequence s5khmx_unlock_regs[] = {
 	{ CCI_REG16(0x6010), 0x0001 },
 };
 
-/* Global setup, applied after the reset settles. */
+/* Global setup, applied once the reset has settled. */
 static const struct cci_reg_sequence s5khmx_init_regs[] = {
 	{ CCI_REG16(0x6214), 0xff7d },
 	{ CCI_REG16(0x6218), 0x0000 },
@@ -397,7 +397,7 @@ static const struct cci_reg_sequence s5khmx_init_regs[] = {
 	{ CCI_REG16(0x6f12), 0x0014 },
 };
 
-/* 4x4 binned preview/still, 3008x2256 at 412.53 MHz per lane. */
+/* 4x4 binned; the sensible default for preview and stills. */
 static const struct cci_reg_sequence s5khmx_3008x2256_regs[] = {
 	{ CCI_REG16(0x6028), 0x2000 },
 	{ CCI_REG16(0x0136), 0x1300 },
@@ -580,8 +580,8 @@ static const struct cci_reg_sequence s5khmx_3008x2256_regs[] = {
 	{ CCI_REG16(0xf472), 0x0010 },
 };
 
-/* Full 108 Mpixel readout, 12032x9024 at 1233.2 MHz per lane. */
-static const struct cci_reg_sequence s5khmx_12032x9024_regs[] = {
+/* 24 Mpixel readout. */
+static const struct cci_reg_sequence s5khmx_5760x4320_regs[] = {
 	{ CCI_REG16(0x6028), 0x2000 },
 	{ CCI_REG16(0x0136), 0x1300 },
 	{ CCI_REG16(0x013e), 0x00c8 },
@@ -591,20 +591,20 @@ static const struct cci_reg_sequence s5khmx_12032x9024_regs[] = {
 	{ CCI_REG16(0x0302), 0x0003 },
 	{ CCI_REG16(0x0300), 0x0002 },
 	{ CCI_REG16(0x030e), 0x0003 },
-	{ CCI_REG16(0x0310), 0x0119 },
-	{ CCI_REG16(0x0312), 0x0001 },
+	{ CCI_REG16(0x0310), 0x0113 },
+	{ CCI_REG16(0x0312), 0x0002 },
 	{ CCI_REG16(0x0308), 0x0008 },
 	{ CCI_REG16(0x030a), 0x0002 },
 	{ CCI_REG16(0x602a), 0x23be },
 	{ CCI_REG16(0x6f12), 0x0092 },
-	{ CCI_REG16(0x0344), 0x0000 },
-	{ CCI_REG16(0x0346), 0x0000 },
-	{ CCI_REG16(0x0348), 0x2f0f },
-	{ CCI_REG16(0x034a), 0x234f },
-	{ CCI_REG16(0x0350), 0x0008 },
-	{ CCI_REG16(0x0352), 0x0008 },
-	{ CCI_REG16(0x034c), 0x2f00 },
-	{ CCI_REG16(0x034e), 0x2340 },
+	{ CCI_REG16(0x0344), 0x0c48 },
+	{ CCI_REG16(0x0346), 0x0938 },
+	{ CCI_REG16(0x0348), 0x22c7 },
+	{ CCI_REG16(0x034a), 0x1a17 },
+	{ CCI_REG16(0x0350), 0x0000 },
+	{ CCI_REG16(0x0352), 0x0000 },
+	{ CCI_REG16(0x034c), 0x1680 },
+	{ CCI_REG16(0x034e), 0x10e0 },
 	{ CCI_REG16(0x0900), 0x0111 },
 	{ CCI_REG16(0x0400), 0x1010 },
 	{ CCI_REG16(0x0404), 0x1000 },
@@ -612,6 +612,8 @@ static const struct cci_reg_sequence s5khmx_12032x9024_regs[] = {
 	{ CCI_REG16(0x0382), 0x0001 },
 	{ CCI_REG16(0x0384), 0x0001 },
 	{ CCI_REG16(0x0386), 0x0001 },
+	{ CCI_REG16(0x602a), 0x38e0 },
+	{ CCI_REG16(0x6f12), 0x0101 },
 	{ CCI_REG16(0x602a), 0x38e6 },
 	{ CCI_REG16(0x6f12), 0x0208 },
 	{ CCI_REG16(0x6f12), 0x0100 },
@@ -623,7 +625,7 @@ static const struct cci_reg_sequence s5khmx_12032x9024_regs[] = {
 	{ CCI_REG16(0x6f12), 0x0100 },
 	{ CCI_REG16(0x6f12), 0x0000 },
 	{ CCI_REG16(0x0342), 0x3090 },
-	{ CCI_REG16(0x0340), 0x23ca },
+	{ CCI_REG16(0x0340), 0x1160 },
 	{ CCI_REG16(0x0114), 0x0200 },
 	{ CCI_REG16(0x0118), 0x0001 },
 	{ CCI_REG16(0x011c), 0x0101 },
@@ -638,7 +640,7 @@ static const struct cci_reg_sequence s5khmx_12032x9024_regs[] = {
 	{ CCI_REG16(0x6f12), 0x0003 },
 	{ CCI_REG16(0x602a), 0x3902 },
 	{ CCI_REG16(0x6f12), 0x0101 },
-	{ CCI_REG16(0x0d00), 0x0100 },
+	{ CCI_REG16(0x0d00), 0x0101 },
 	{ CCI_REG16(0x0d02), 0x0001 },
 	{ CCI_REG16(0x0d04), 0x0002 },
 	{ CCI_REG16(0x602a), 0x4afe },
@@ -747,9 +749,9 @@ static const struct cci_reg_sequence s5khmx_12032x9024_regs[] = {
 	{ CCI_REG16(0x6f12), 0x3fff },
 	{ CCI_REG16(0x0b08), 0x0100 },
 	{ CCI_REG16(0x602a), 0x3954 },
-	{ CCI_REG16(0x6f12), 0x2f00 },
+	{ CCI_REG16(0x6f12), 0x1680 },
 	{ CCI_REG16(0x602a), 0x3958 },
-	{ CCI_REG16(0x6f12), 0x2340 },
+	{ CCI_REG16(0x6f12), 0x10e0 },
 	{ CCI_REG16(0x602a), 0xba2c },
 	{ CCI_REG16(0x6f12), 0x0000 },
 	{ CCI_REG16(0x602a), 0xba42 },
@@ -770,21 +772,22 @@ static const struct s5khmx_mode s5khmx_supported_modes[] = {
 		.height = 2256,
 		.hts = 16032,
 		.vts = 2373,
-		.link_freq_idx = S5KHMX_LINK_FREQ_412MHZ,
+		.link_freq_idx = S5KHMX_LINK_FREQ_687MHZ,
 		.reg_list = {
 			.regs = s5khmx_3008x2256_regs,
 			.num_regs = ARRAY_SIZE(s5khmx_3008x2256_regs),
 		},
 	},
 	{
-		.width = 12032,
-		.height = 9024,
+		/* 24 Mpixel readout. */
+		.width = 5760,
+		.height = 4320,
 		.hts = 12432,
-		.vts = 9162,
-		.link_freq_idx = S5KHMX_LINK_FREQ_1233MHZ,
+		.vts = 4480,
+		.link_freq_idx = S5KHMX_LINK_FREQ_1003MHZ,
 		.reg_list = {
-			.regs = s5khmx_12032x9024_regs,
-			.num_regs = ARRAY_SIZE(s5khmx_12032x9024_regs),
+			.regs = s5khmx_5760x4320_regs,
+			.num_regs = ARRAY_SIZE(s5khmx_5760x4320_regs),
 		},
 	},
 };
@@ -1115,8 +1118,8 @@ static int s5khmx_get_selection(struct v4l2_subdev *sd,
 	case V4L2_SEL_TGT_NATIVE_SIZE:
 		sel->r.left = 0;
 		sel->r.top = 0;
-		sel->r.width = s5khmx_supported_modes[1].width;
-		sel->r.height = s5khmx_supported_modes[1].height;
+		sel->r.width = s5khmx_supported_modes[2 - 1].width;
+		sel->r.height = s5khmx_supported_modes[2 - 1].height;
 		return 0;
 	default:
 		return -EINVAL;
@@ -1457,5 +1460,5 @@ static struct i2c_driver s5khmx_i2c_driver = {
 module_i2c_driver(s5khmx_i2c_driver);
 
 MODULE_AUTHOR("Roy Kaandorp <roykaandorp@gmail.com>");
-MODULE_DESCRIPTION("Samsung S5KHMX sensor driver");
+MODULE_DESCRIPTION("Samsung S5KHMX (ISOCELL Bright HMX) 108 Mpixel camera sensor driver");
 MODULE_LICENSE("GPL");

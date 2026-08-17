@@ -481,9 +481,14 @@
 		};
 
 		/* Toegevoegd uit vendor DTSI */
-		vreg_l3c_0p8: ldo3 {
-			regulator-name = "vreg_l3c_0p8";
-			regulator-min-microvolt = <800000>;
+		/*
+		 * Only the macro camera's digital core runs from this rail, and
+		 * it needs 1.2 V; left at the wider range it came up at 800 mV
+		 * and the sensor answered on I2C but never streamed.
+		 */
+		vreg_l3c_1p2: ldo3 {
+			regulator-name = "vreg_l3c_1p2";
+			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <1200000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
@@ -1222,7 +1227,7 @@
 		port {
 			s5khmx_ep: endpoint {
 				data-lanes = <1 2 3>;
-				link-frequencies = /bits/ 64 <412530000 1233200000>;
+				link-frequencies = /bits/ 64 <687550000 1003200000>;
 				remote-endpoint = <&csiphy0_ep>;
 			};
 		};
@@ -1243,7 +1248,7 @@
 		reg = <0x2d>;
 
 		avdd-supply = <&vreg_l5p>;
-		dvdd-supply = <&vreg_l3c_0p8>;
+		dvdd-supply = <&vreg_l3c_1p2>;
 		dovdd-supply = <&vreg_l1c_1p8>;
 
 		clocks = <&camcc CAM_CC_MCLK1_CLK>;
@@ -1264,7 +1269,7 @@
 		port {
 			s5k5e9_ep: endpoint {
 				data-lanes = <1 2>;
-				link-frequencies = /bits/ 64 <175200000>;
+				link-frequencies = /bits/ 64 <438000000>;
 				remote-endpoint = <&csiphy1_ep>;
 			};
 		};
@@ -1342,7 +1347,7 @@
 		port {
 			s5k3t2_ep: endpoint {
 				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <248320000 716800000 240000000>;
+				link-frequencies = /bits/ 64 <310400000 896000000 300000000>;
 				remote-endpoint = <&csiphy4_ep>;
 			};
 		};

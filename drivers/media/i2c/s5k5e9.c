@@ -66,11 +66,11 @@
  * carries an index into this menu rather than there being a single frequency.
  */
 enum {
-	S5K5E9_LINK_FREQ_175MHZ,
+	S5K5E9_LINK_FREQ_438MHZ,
 };
 
 static const s64 s5k5e9_link_freq_menu[] = {
-	[S5K5E9_LINK_FREQ_175MHZ] = 175200000,
+	[S5K5E9_LINK_FREQ_438MHZ] = 438000000,
 };
 
 /* Ordered so the flip controls can pick a code by index. */
@@ -230,7 +230,7 @@ static const struct s5k5e9_mode s5k5e9_supported_modes[] = {
 		.height = 1944,
 		.hts = 3112,
 		.vts = 2030,
-		.link_freq_idx = S5K5E9_LINK_FREQ_175MHZ,
+		.link_freq_idx = S5K5E9_LINK_FREQ_438MHZ,
 		.reg_list = {
 			.regs = s5k5e9_2592x1944_regs,
 			.num_regs = ARRAY_SIZE(s5k5e9_2592x1944_regs),
