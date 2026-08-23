@@ -1318,14 +1318,23 @@
 	};
 
 	/*
-	 * The wide module's calibration EEPROM. Always enabled: byte 1 is
-	 * the module integrator id (0x03 Semco, 0x01 Sunny), which is how
-	 * the fitted variant is told apart at boot. The Sunny module's
-	 * 8 KiB part simply wraps when read as this 16 KiB type.
+	 * The wide module's calibration EEPROM, at a different address per
+	 * variant: the Semco module's M24C128X answers at 0x50, the Sunny
+	 * module's GT24P64E at 0x51 (both per the vendor camera blobs).
+	 * Both are always enabled - the absent one simply fails to probe -
+	 * and byte 1 is the module integrator id (0x03 Semco, 0x01 Sunny),
+	 * which is how the fitted variant is told apart at boot.
 	 */
 	eeprom@50 {
 		compatible = "atmel,24c128";
 		reg = <0x50>;
+		read-only;
+		vcc-supply = <&vreg_l1c_1p8>;
+	};
+
+	eeprom@51 {
+		compatible = "atmel,24c64";
+		reg = <0x51>;
 		read-only;
 		vcc-supply = <&vreg_l1c_1p8>;
 	};
