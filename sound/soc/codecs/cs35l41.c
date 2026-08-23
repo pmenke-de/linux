@@ -879,22 +879,30 @@ static int cs35l41_dai_set_sysclk(struct snd_soc_dai *dai,
 	unsigned int val;
 	int fsindex;
 
-	fsindex = cs35l41_get_fs_mon_config_index(freq);
-	if (fsindex < 0) {
-		dev_err(cs35l41->dev, "Invalid CLK Config freq: %u\n", freq);
-		return -EINVAL;
-	}
-
 	dev_dbg(cs35l41->dev, "Set DAI sysclk %d\n", freq);
 
-	if (freq <= 6144000) {
-		/* Use the lookup table */
-		fs1_val = cs35l41_fs_mon[fsindex].fs1;
-		fs2_val = cs35l41_fs_mon[fsindex].fs2;
-	} else {
-		/* Use hard-coded values */
+	if (freq > 6144000) {
+		/*
+		 * Above the table's range the monitor windows are fixed, so the
+		 * entry is never read. Do not look one up: the table has no
+		 * entry above 12.288 MHz, and requiring one rejects bit clocks
+		 * the part is perfectly happy with -- an eight slot 32-bit frame
+		 * at 96 kHz runs at 24.576 MHz -- leaving TST_FS_MON0 unwritten
+		 * on every stream because the lookup was only ever a validity
+		 * check for values this branch discards.
+		 */
 		fs1_val = 0x10;
 		fs2_val = 0x24;
+	} else {
+		fsindex = cs35l41_get_fs_mon_config_index(freq);
+		if (fsindex < 0) {
+			dev_err(cs35l41->dev, "Invalid CLK Config freq: %u\n",
+				freq);
+			return -EINVAL;
+		}
+
+		fs1_val = cs35l41_fs_mon[fsindex].fs1;
+		fs2_val = cs35l41_fs_mon[fsindex].fs2;
 	}
 
 	val = fs1_val;
