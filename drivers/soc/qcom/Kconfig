@@ -199,6 +199,14 @@ config QCOM_SMD_RPM
 config QCOM_SMEM_STATE
 	bool
 
+config QCOM_SMP2P_SLEEPSTATE
+	tristate "Qualcomm SMP2P sleep state notifier"
+	depends on QCOM_SMP2P
+	help
+	  Notify remote processors over SMP2P whether the application
+	  processor is awake. Some DSP firmware, such as the SM8250
+	  sensor DSP, faults across a suspend cycle without it.
+
 config QCOM_SMP2P
 	tristate "Qualcomm Shared Memory Point to Point support"
 	depends on MAILBOX

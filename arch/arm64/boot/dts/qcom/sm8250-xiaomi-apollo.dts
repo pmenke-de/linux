@@ -1677,6 +1677,15 @@
 	status = "okay";
 };
 
+/ {
+	smp2p-sleepstate {
+		compatible = "qcom,smp2p-sleepstate";
+		qcom,smem-states = <&sleepstate_smp2p_out 0>;
+		interrupts-extended = <&sleepstate_smp2p_in 0 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "smp2p-sleepstate-in";
+	};
+};
+
 &pm8150l_flash {
 	status = "okay";
 
