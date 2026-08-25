@@ -2646,6 +2646,10 @@ int ath11k_core_pre_init(struct ath11k_base *ab)
 }
 EXPORT_SYMBOL(ath11k_core_pre_init);
 
+static bool ath11k_wow_suspend;
+module_param_named(wow_suspend, ath11k_wow_suspend, bool, 0444);
+MODULE_PARM_DESC(wow_suspend, "Use WoWLAN-mode suspend on machines the DMI quirk table does not know, keeping the firmware alive across suspend");
+
 static int ath11k_core_pm_notify(struct notifier_block *nb,
 				 unsigned long action, void *nouse)
 {
@@ -2691,6 +2695,8 @@ int ath11k_core_init(struct ath11k_base *ab)
 	dmi_id = dmi_first_match(ath11k_pm_quirk_table);
 	if (dmi_id)
 		ab->pm_policy = (kernel_ulong_t)dmi_id->driver_data;
+	else if (ath11k_wow_suspend)
+		ab->pm_policy = ATH11K_PM_WOW;
 	else
 		ab->pm_policy = ATH11K_PM_DEFAULT;
 
