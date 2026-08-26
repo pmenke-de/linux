@@ -3200,6 +3200,10 @@ static const struct pci_error_handlers mhi_pci_err_handler = {
  * still (re)binding its satellite channels; require thirty quiet
  * seconds on the satellite links before offering M3.
  */
+static bool fusion_m3;
+module_param(fusion_m3, bool, 0644);
+MODULE_PARM_DESC(fusion_m3, "Attempt MHI M3 across suspend on the SDX55 fusion (EXPERIMENTAL: the modem has taken ERRFATAL ~60ms after M3 entry even on a settled satellite link)");
+
 extern unsigned long mhi_sat_last_transition_jiffies;
 
 static bool mhi_sat_settled(void)
@@ -3256,7 +3260,8 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 		 * failure here simply keeps the old M0-across-suspend
 		 * behaviour. D3hot remains forbidden either way.
 		 */
-		if (test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
+		if (fusion_m3 &&
+		    test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
 		    mhi_cntrl->ee == MHI_EE_AMSS &&
 		    mhi_sat_settled()) {
 			err = mhi_pm_suspend(mhi_cntrl);
