@@ -176,6 +176,10 @@ struct mhi_sat_packet {
  * link is (re)initializing crashes the modem, so M3 is only attempted
  * once every satellite state has been stable for a while.
  */
+static bool sat_allow_diag;
+module_param(sat_allow_diag, bool, 0644);
+MODULE_PARM_DESC(sat_allow_diag, "Allow the remote's diag-forwarding satellite channels (they pin the ADSP and the modem link awake)");
+
 unsigned long mhi_sat_last_transition_jiffies;
 
 static void mhi_sat_mark_transition(void)
@@ -554,6 +558,23 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 		case MHI_PKT_TYPE_START_CHAN_CMD: {
 			int id = MHI_TRE_GET_ID(pkt);
 			struct mhi_sat_device *sat_dev;
+
+			/*
+			 * The ADSP's diag-forwarding channels stream its
+			 * diagnostics into the modem continuously; servicing
+			 * them keeps the ADSP from ever power-collapsing and
+			 * gives the modem link no idle window for M1/M2.
+			 * Nothing on this system consumes that stream (ADSP
+			 * F3 is read over QRTR), so refuse the start - the
+			 * remote treats a refusal as the feature being
+			 * unavailable. sat_allow_diag=1 restores it.
+			 */
+			if (!sat_allow_diag && (id == 50 || id == 51)) {
+				dev_info(dev,
+					 "sat: refusing diag chan %d for power\n",
+					 id);
+				break;
+			}
 
 			sat_dev = find_sat_dev_by_id(sat_cntrl, id,
 						     SAT_CTXT_TYPE_CHAN);
