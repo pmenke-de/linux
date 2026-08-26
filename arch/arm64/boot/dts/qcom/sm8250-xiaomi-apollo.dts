@@ -1615,6 +1615,8 @@
 };
 
 &pcie2 {
+	/* MDM2AP PCIe WAKE#: the SDX55 pulls this low to ask for the host */
+	wake-gpios = <&tlmm 87 GPIO_ACTIVE_LOW>;
 	status = "okay";
 };
 

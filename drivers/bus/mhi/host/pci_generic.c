@@ -19,6 +19,8 @@
 #include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/pm_runtime.h>
+#include <linux/gpio/consumer.h>
+#include <linux/of.h>
 #include <linux/sizes.h>
 #include <linux/timer.h>
 #include <linux/vmalloc.h>
@@ -1405,6 +1407,8 @@ enum mhi_pci_device_status {
 	MHI_PCI_DEV_SUSPENDED,
 	MHI_PCI_DEV_LINK_RETRAIN_PENDING,
 	MHI_PCI_DEV_AUTOSUSPEND_SET,
+	MHI_PCI_DEV_SYS_SUSPEND,	/* inside system (not runtime) suspend */
+	MHI_PCI_DEV_FUSION_MHI_ONLY,	/* suspended at MHI level only, still D0 */
 };
 
 /*
@@ -1416,6 +1420,8 @@ enum mhi_pci_device_status {
 #define MHI_MSI_POLL_INTERVAL_MS	2
 
 struct mhi_pci_device {
+	struct gpio_desc *wake_gpio;
+	int wake_irq;
 	struct mhi_controller mhi_cntrl;
 	struct pci_saved_state *pci_state;
 	struct work_struct recovery_work;
@@ -1500,6 +1506,68 @@ static void mhi_pci_collect_rddm(struct mhi_controller *mhi_cntrl)
 
 	/* dev_coredumpv takes ownership of the vmalloc'd buffer */
 	dev_coredumpv(&pdev->dev, dump, copied, GFP_KERNEL);
+}
+
+/*
+ * Out-of-band wake from the modem. On this platform the endpoint cannot
+ * signal in-band from D3hot (MSIs do not traverse the SMMU into iMSI-RX,
+ * PME is unwired), so a runtime-suspended modem that gets paged has no
+ * way to ask for the host - it starves and takes a fatal error. The
+ * SDX55 asserts PCIE_WAKE# (tlmm 87) instead, exactly what the vendor
+ * driver listens for.
+ */
+static irqreturn_t mhi_pci_wake_irq(int irq, void *data)
+{
+	struct mhi_pci_device *mhi_pdev = data;
+	struct device *dev = mhi_pdev->mhi_cntrl.cntrl_dev;
+
+	pm_wakeup_event(dev, 0);
+	pm_request_resume(dev);
+
+	return IRQ_HANDLED;
+}
+
+static void mhi_pci_setup_fusion_wake(struct pci_dev *pdev,
+				      struct mhi_pci_device *mhi_pdev)
+{
+	struct pci_host_bridge *bridge = pci_find_host_bridge(pdev->bus);
+	struct device_node *np;
+	int ret;
+
+	if (mhi_pdev->wake_gpio || !bridge || !bridge->dev.parent)
+		return;
+
+	np = bridge->dev.parent->of_node;
+	if (!np)
+		return;
+
+	mhi_pdev->wake_gpio = devm_fwnode_gpiod_get(&pdev->dev,
+						    of_fwnode_handle(np),
+						    "wake", GPIOD_IN,
+						    "mhi-modem-wake");
+	if (IS_ERR(mhi_pdev->wake_gpio)) {
+		dev_info(&pdev->dev, "no usable wake GPIO (%ld)\n",
+			 PTR_ERR(mhi_pdev->wake_gpio));
+		mhi_pdev->wake_gpio = NULL;
+		return;
+	}
+
+	mhi_pdev->wake_irq = gpiod_to_irq(mhi_pdev->wake_gpio);
+	if (mhi_pdev->wake_irq < 0)
+		return;
+
+	ret = devm_request_threaded_irq(&pdev->dev, mhi_pdev->wake_irq, NULL,
+					mhi_pci_wake_irq,
+					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
+					"mhi-modem-wake", mhi_pdev);
+	if (ret) {
+		dev_warn(&pdev->dev, "wake IRQ request failed: %d\n", ret);
+		return;
+	}
+
+	enable_irq_wake(mhi_pdev->wake_irq);
+	dev_info(&pdev->dev, "modem WAKE# wired (gpio irq %d)\n",
+		 mhi_pdev->wake_irq);
 }
 
 static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
@@ -1612,7 +1680,8 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
 			pm_runtime_forbid(&pdev->dev);
 			dev_info(&pdev->dev,
 				 "mission mode: keeping runtime PM forbidden (disable_pm)\n");
-		} else if (mhi_pdev && mhi_pdev->info == &mhi_qcom_sdx55_fusion_info) {
+		} else if (mhi_pdev && mhi_pdev->info == &mhi_qcom_sdx55_fusion_info &&
+			   !fusion_boot_cycle) {
 			/*
 			 * SDX55 fusion modems crash with ERRFATAL ~5 s into
 			 * mhi_pm_suspend (MCFG refresh timer watchdog fires
@@ -1640,7 +1709,8 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
 			 * ever arming. Drop the count explicitly after allowing
 			 * runtime PM, just like the normal probe path does.
 			 */
-			pm_runtime_set_autosuspend_delay(&pdev->dev, 2000);
+			mhi_pci_setup_fusion_wake(pdev, mhi_pdev);
+			pm_runtime_set_autosuspend_delay(&pdev->dev, 5000);
 			pm_runtime_use_autosuspend(&pdev->dev);
 			pm_runtime_mark_last_busy(&pdev->dev);
 			pm_runtime_allow(&pdev->dev);
@@ -3251,8 +3321,12 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 	 * s2idle. Returning before MHI_PCI_DEV_SUSPENDED is set keeps the pair
 	 * symmetric, as mhi_pci_runtime_resume() returns early when it is clear.
 	 */
-	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info) {
+	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info &&
+	    test_bit(MHI_PCI_DEV_SYS_SUSPEND, &mhi_pdev->status)) {
 		/*
+		 * Runtime suspend falls through to the generic M3+D3hot path
+		 * below (the vendor model, proven by the mission-mode cycle);
+		 * only system suspend keeps M0/D0 across s2idle.
 		 * Saving the state here is what keeps the modem powered: the
 		 * PCI core only calls pci_prepare_to_sleep() (D3hot) when the
 		 * driver has not saved state itself. Without this the device
@@ -3275,6 +3349,8 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 			err = mhi_pm_suspend(mhi_cntrl);
 			if (!err) {
 				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
+				set_bit(MHI_PCI_DEV_FUSION_MHI_ONLY,
+					&mhi_pdev->status);
 				dev_info(&pdev->dev, "fusion modem entered M3 for suspend\n");
 				return 0;
 			}
@@ -3322,7 +3398,7 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
 	if (!test_and_clear_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status))
 		return 0;
 
-	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info) {
+	if (test_and_clear_bit(MHI_PCI_DEV_FUSION_MHI_ONLY, &mhi_pdev->status)) {
 		/*
 		 * The device stayed in D0 with its state saved, so there is
 		 * nothing PCI-level to undo - only the M3 -> M0 transition.
@@ -3380,8 +3456,15 @@ err_recovery:
 
 static int  __maybe_unused mhi_pci_suspend(struct device *dev)
 {
+	struct mhi_pci_device *mhi_pdev = dev_get_drvdata(dev);
+	int ret;
+
+	set_bit(MHI_PCI_DEV_SYS_SUSPEND, &mhi_pdev->status);
 	pm_runtime_disable(dev);
-	return mhi_pci_runtime_suspend(dev);
+	ret = mhi_pci_runtime_suspend(dev);
+	if (ret)
+		clear_bit(MHI_PCI_DEV_SYS_SUSPEND, &mhi_pdev->status);
+	return ret;
 }
 
 static int __maybe_unused mhi_pci_resume(struct device *dev)
@@ -3393,6 +3476,8 @@ static int __maybe_unused mhi_pci_resume(struct device *dev)
 	 */
 	ret = mhi_pci_runtime_resume(dev);
 	pm_runtime_enable(dev);
+	clear_bit(MHI_PCI_DEV_SYS_SUSPEND,
+		  &((struct mhi_pci_device *)dev_get_drvdata(dev))->status);
 
 	return ret;
 }
