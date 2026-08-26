@@ -236,6 +236,14 @@
 			record-size = <0x40000>;
 			console-size = <0x40000>;
 			ecc-size = <0x00>;
+			/*
+			 * Keep kmsg dumps for every reason through poweroff,
+			 * so an orderly shutdown initiated from within a
+			 * suspend leaves a trail (a warm reboot preserves
+			 * RAM; a PMIC cold power-off does not - that case
+			 * needs PMIC-side breadcrumbs instead).
+			 */
+			max-reason = <6>;
 			no-map;
 		};
 

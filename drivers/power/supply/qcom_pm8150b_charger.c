@@ -970,6 +970,41 @@ static int smb5_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int __maybe_unused smb5_suspend(struct device *dev)
+{
+	struct smb5_chip *chip = dev_get_drvdata(dev);
+
+	/*
+	 * A cable change must end s2idle: besides being what users expect,
+	 * an edge that fires while the interrupt is suspended is lost, and
+	 * the cached charging status goes stale until the next event.
+	 */
+	if (chip->cable_irq > 0)
+		enable_irq_wake(chip->cable_irq);
+
+	return 0;
+}
+
+static int __maybe_unused smb5_resume(struct device *dev)
+{
+	struct smb5_chip *chip = dev_get_drvdata(dev);
+
+	if (chip->cable_irq > 0)
+		disable_irq_wake(chip->cable_irq);
+
+	/*
+	 * Re-sync unconditionally: if the cable changed while the system
+	 * slept, no edge may have been delivered.
+	 */
+	power_supply_changed(chip->chg_psy);
+	schedule_delayed_work(&chip->status_change_work,
+			      msecs_to_jiffies(1500));
+
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(smb5_pm_ops, smb5_suspend, smb5_resume);
+
 static const struct of_device_id smb5_match_id_table[] = {
 	{ .compatible = "qcom,pm8150b-charger", .data = "pm8150b" },
 	{ /* sentinal */ }
@@ -981,6 +1016,7 @@ static struct platform_driver qcom_spmi_smb5 = {
 	.driver = {
 		.name = "qcom-pm8150b-charger",
 		.of_match_table = smb5_match_id_table,
+		.pm = &smb5_pm_ops,
 		},
 };
 
