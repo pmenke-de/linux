@@ -1278,7 +1278,16 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 		if (!wait_for_completion_timeout(&ctx->work, 10 * HZ))
 			err = -ETIMEDOUT;
 	} else {
-		err = wait_for_completion_interruptible(&ctx->work);
+		/*
+		 * A freezable wait: letting the freezer interrupt an
+		 * in-flight invocation makes the restarted syscall send a
+		 * duplicate invoke after thaw, which the DSP answers with a
+		 * fatal frpc_dsp error (observed as an SLPI subsystem crash
+		 * on every resume with a sensor client running).
+		 */
+		err = wait_for_completion_state(&ctx->work,
+						TASK_INTERRUPTIBLE |
+						TASK_FREEZABLE);
 	}
 
 	if (err)
