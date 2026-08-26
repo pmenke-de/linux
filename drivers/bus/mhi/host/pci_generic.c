@@ -35,6 +35,11 @@ int qcom_pcie_relink(struct pci_dev *pdev);
 
 #define HEALTH_CHECK_PERIOD (HZ * 2)
 
+static bool fusion_boot_cycle;
+module_param(fusion_boot_cycle, bool, 0444);
+MODULE_PARM_DESC(fusion_boot_cycle, "Run the vendor-style forced M3+D3hot cycle at mission mode on the SDX55 fusion (lets the modem switch to AMSS PCIe PHY settings)");
+
+
 /* PCI VID definitions */
 #define PCI_VENDOR_ID_THALES	0x1269
 #define PCI_VENDOR_ID_QUECTEL	0x1eac
@@ -1528,8 +1533,11 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
 		 * This runs BEFORE mhi_create_devices() so pending_pkts == 0
 		 * and the suspend won't be refused.
 		 */
-		if (mhi_pdev && mhi_pdev->info && mhi_pdev->info->async_power_up &&
-		    mhi_pdev->info != &mhi_qcom_sdx55_fusion_info) {
+		if (mhi_pdev && mhi_pdev->info &&
+		    ((mhi_pdev->info->async_power_up &&
+		      mhi_pdev->info != &mhi_qcom_sdx55_fusion_info) ||
+		     (fusion_boot_cycle &&
+		      mhi_pdev->info == &mhi_qcom_sdx55_fusion_info))) {
 			int ret, retries = 0;
 			struct pci_saved_state *saved_state = NULL;
 
