@@ -177,9 +177,9 @@ struct mhi_sat_packet {
  * link is (re)initializing crashes the modem, so M3 is only attempted
  * once every satellite state has been stable for a while.
  */
-static bool sat_allow_diag;
+static bool sat_allow_diag = true;
 module_param(sat_allow_diag, bool, 0644);
-MODULE_PARM_DESC(sat_allow_diag, "Allow the remote's diag-forwarding satellite channels (they pin the ADSP and the modem link awake)");
+MODULE_PARM_DESC(sat_allow_diag, "Allow the remote's diag-forwarding satellite channels (refusing them makes the ADSP abandon the whole channel setup, killing call audio)");
 
 unsigned long mhi_sat_last_transition_jiffies;
 
@@ -329,17 +329,34 @@ static struct mhi_sat_subsys *find_subsys_by_name(const char *name)
  * is silently lost. Pin the device in M0 for as long as a satellite
  * channel is started (in practice: for the duration of a voice call).
  */
+/*
+ * The always-started diag channels must not pin the device - the ADSP's
+ * own MHI stack asserts the wake doorbell for its bursts and the modem
+ * pulls WAKE# to be resumed. Voice channels span exactly a call, and
+ * for those the pin buys glitch-free audio.
+ */
+static bool mhi_sat_chan_is_diag(struct mhi_sat_device *sat_dev)
+{
+	int ul = sat_dev->mhi_dev->ul_chan_id;
+	int dl = sat_dev->mhi_dev->dl_chan_id;
+
+	return ul == 50 || ul == 51 || dl == 50 || dl == 51;
+}
+
 static void mhi_sat_chan_started(struct mhi_sat_device *sat_dev)
 {
 	sat_dev->chan_started = true;
-	pm_runtime_get(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+	if (!mhi_sat_chan_is_diag(sat_dev))
+		pm_runtime_get(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
 }
 
 static void mhi_sat_chan_stopped(struct mhi_sat_device *sat_dev)
 {
 	sat_dev->chan_started = false;
-	pm_runtime_mark_last_busy(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
-	pm_runtime_put(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+	if (!mhi_sat_chan_is_diag(sat_dev)) {
+		pm_runtime_mark_last_busy(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+		pm_runtime_put(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+	}
 }
 
 static struct mhi_sat_cntrl *find_sat_cntrl_by_id(struct mhi_sat_subsys *subsys,
