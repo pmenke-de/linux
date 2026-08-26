@@ -32,6 +32,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/pm_runtime.h>
 #include <linux/pci.h>
 #include <linux/rpmsg.h>
 #include <linux/sched/clock.h>
@@ -322,6 +323,25 @@ static struct mhi_sat_subsys *find_subsys_by_name(const char *name)
 	return NULL;
 }
 
+/*
+ * The remote rings the device's doorbells directly over the BAR, invisibly
+ * to the host's runtime PM - audio lands on a runtime-suspended modem and
+ * is silently lost. Pin the device in M0 for as long as a satellite
+ * channel is started (in practice: for the duration of a voice call).
+ */
+static void mhi_sat_chan_started(struct mhi_sat_device *sat_dev)
+{
+	sat_dev->chan_started = true;
+	pm_runtime_get(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+}
+
+static void mhi_sat_chan_stopped(struct mhi_sat_device *sat_dev)
+{
+	sat_dev->chan_started = false;
+	pm_runtime_mark_last_busy(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+	pm_runtime_put(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+}
+
 static struct mhi_sat_cntrl *find_sat_cntrl_by_id(struct mhi_sat_subsys *subsys,
 						  u32 dev_id)
 {
@@ -536,7 +556,7 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 				dev_info(dev, "sat: chan %d restarted by %s\n",
 					 id, sat_cntrl->subsys->name);
 				mhi_unprepare_from_transfer(sat_dev->mhi_dev);
-				sat_dev->chan_started = false;
+				mhi_sat_chan_stopped(sat_dev);
 			}
 
 			gen_ctxt.type = MHI_CTXT_TYPE_GENERIC;
@@ -584,7 +604,7 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 			}
 
 			if (!mhi_prepare_for_transfer(sat_dev->mhi_dev)) {
-				sat_dev->chan_started = true;
+				mhi_sat_chan_started(sat_dev);
 				code = MHI_EV_CC_SUCCESS;
 			}
 
@@ -604,7 +624,7 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 			}
 
 			mhi_unprepare_from_transfer(sat_dev->mhi_dev);
-			sat_dev->chan_started = false;
+			mhi_sat_chan_stopped(sat_dev);
 			code = MHI_EV_CC_SUCCESS;
 
 			dev_dbg(dev, "sat: RESET chan %d ok\n", id);
@@ -1345,7 +1365,7 @@ static void mhi_sat_rpmsg_remove(struct rpmsg_device *rpdev)
 		list_for_each_entry(sat_dev, &sat_cntrl->dev_list, node) {
 			if (sat_dev->chan_started) {
 				mhi_unprepare_from_transfer(sat_dev->mhi_dev);
-				sat_dev->chan_started = false;
+				mhi_sat_chan_stopped(sat_dev);
 			}
 		}
 		mhi_sat_free_addr_map(sat_cntrl);
