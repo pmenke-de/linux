@@ -144,7 +144,13 @@ static int sdam_probe(struct platform_device *pdev)
 	sdam->sdam_config.owner = THIS_MODULE;
 	sdam->sdam_config.add_legacy_fixed_of_cells = true;
 	sdam->sdam_config.stride = 1;
-	sdam->sdam_config.size = sdam->size;
+	/*
+	 * nvmem offsets are register offsets from the SDAM base, so the
+	 * addressable range ends at SDAM_MEM_START + size, not size:
+	 * without this the top SDAM_MEM_START bytes get clamped away by
+	 * the nvmem core before sdam_is_valid() ever sees them.
+	 */
+	sdam->sdam_config.size = SDAM_MEM_START + sdam->size;
 	sdam->sdam_config.word_size = 1;
 	sdam->sdam_config.reg_read = sdam_read;
 	sdam->sdam_config.reg_write = sdam_write;
