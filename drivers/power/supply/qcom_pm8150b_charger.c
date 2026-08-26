@@ -1011,8 +1011,29 @@ static const struct of_device_id smb5_match_id_table[] = {
 };
 MODULE_DEVICE_TABLE(of, smb5_match_id_table);
 
+static void smb5_shutdown(struct platform_device *pdev)
+{
+	struct smb5_chip *chip = platform_get_drvdata(pdev);
+
+	/*
+	 * Park the charger the way the vendor driver does before any
+	 * reset: charge pump off, Type-C back to sink-only, adapter
+	 * allowance widened to 5V-12V (the vendor's "fix PD bug" write)
+	 * and APSD re-enabled. Left in a PD/HVDCP-narrowed state, the
+	 * PMIC's PBS power-cycle sequence hangs on battery-powered
+	 * reboots and its watchdog turns the reset into a power-off.
+	 */
+	regmap_update_bits(chip->regmap, chip->base + 0x648, BIT(0), 0);
+	regmap_update_bits(chip->regmap, chip->base + 0x544,
+			   GENMASK(2, 0), BIT(1));
+	regmap_write(chip->regmap, chip->base + 0x360, 0x0c);
+	regmap_update_bits(chip->regmap, chip->base + USBIN_OPTIONS_1_CFG,
+			   BIT(3), BIT(3));
+}
+
 static struct platform_driver qcom_spmi_smb5 = {
 	.probe = smb5_probe,
+	.shutdown = smb5_shutdown,
 	.driver = {
 		.name = "qcom-pm8150b-charger",
 		.of_match_table = smb5_match_id_table,

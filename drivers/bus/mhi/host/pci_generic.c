@@ -3234,7 +3234,24 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 		 * back, and the modem is lost on the first system suspend.
 		 */
 		pci_save_state(pdev);
-		dev_dbg(&pdev->dev, "fusion modem stays in M0/D0 across suspend\n");
+
+		/*
+		 * Ask for M3, but never leave a half-state: the historical
+		 * refusal (dev_wake/pending_pkts held by the half-started
+		 * voice channels) is gone since the satellite rework, and a
+		 * failure here simply keeps the old M0-across-suspend
+		 * behaviour. D3hot remains forbidden either way.
+		 */
+		if (test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
+		    mhi_cntrl->ee == MHI_EE_AMSS) {
+			err = mhi_pm_suspend(mhi_cntrl);
+			if (!err) {
+				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
+				dev_info(&pdev->dev, "fusion modem entered M3 for suspend\n");
+				return 0;
+			}
+			dev_warn(&pdev->dev, "fusion M3 refused (%d), staying in M0\n", err);
+		}
 		return 0;
 	}
 
@@ -3276,6 +3293,23 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
 
 	if (!test_and_clear_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status))
 		return 0;
+
+	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info) {
+		/*
+		 * The device stayed in D0 with its state saved, so there is
+		 * nothing PCI-level to undo - only the M3 -> M0 transition.
+		 */
+		err = mhi_pm_resume(mhi_cntrl);
+		if (err) {
+			dev_err(&pdev->dev,
+				"fusion M3 exit failed (%d), scheduling recovery\n",
+				err);
+			queue_work(system_long_wq, &mhi_pdev->recovery_work);
+		} else {
+			dev_info(&pdev->dev, "fusion modem back in M0\n");
+		}
+		return 0;
+	}
 
 	err = pci_enable_device(pdev);
 	if (err)

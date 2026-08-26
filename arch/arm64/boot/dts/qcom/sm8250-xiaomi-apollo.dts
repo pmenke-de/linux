@@ -1679,6 +1679,20 @@
 	status = "okay";
 };
 
+&soc {
+	/*
+	 * Reboot by dropping PS_HOLD directly, as the vendor kernel does.
+	 * This board's TZ implements PSCI SYSTEM_RESET as a power-off, so
+	 * a PSCI reboot on battery leaves the phone dead until a PON
+	 * trigger (cable insert or power key) arrives. Pair with
+	 * reboot=warm so the PMIC keeps the rails up through the reset.
+	 */
+	restart@c264000 {
+		compatible = "qcom,pshold";
+		reg = <0x0 0x0c264000 0x0 0x4>;
+	};
+};
+
 /*
  * A second, read-only PON instance on the PM8150: the vendor-ported
  * driver prints the AP's own power-on/off reasons at every boot.

@@ -1171,6 +1171,42 @@ int qcom_scm_io_writel(phys_addr_t addr, unsigned int val)
 }
 EXPORT_SYMBOL_GPL(qcom_scm_io_writel);
 
+/*
+ * Ask TZ to halt the SPMI PMIC arbiter. Dropping PS_HOLD in the middle
+ * of an SPMI transaction hangs the PMIC's PBS sequencer on some chips
+ * (the fault poweroff reason is PBS_WATCHDOG_TO), so a reset path must
+ * quiesce the arbiter first. After this call SPMI is gone for good -
+ * only useful on the way down.
+ */
+int qcom_scm_spmi_pmic_arbiter_halt(void)
+{
+	struct qcom_scm_desc desc = {
+		.svc = QCOM_SCM_SVC_PWR,
+		.cmd = QCOM_SCM_PWR_IO_DISABLE_PMIC_ARBITER,
+		.arginfo = QCOM_SCM_ARGS(1),
+		.args[0] = 0,
+		.owner = ARM_SMCCC_OWNER_SIP,
+	};
+
+	return qcom_scm_call_atomic(__scm->dev, &desc, NULL);
+}
+EXPORT_SYMBOL_GPL(qcom_scm_spmi_pmic_arbiter_halt);
+
+/* TZ-mediated PS_HOLD drop; may simply return on firmwares without it. */
+int qcom_scm_deassert_ps_hold(void)
+{
+	struct qcom_scm_desc desc = {
+		.svc = QCOM_SCM_SVC_PWR,
+		.cmd = QCOM_SCM_PWR_IO_DEASSERT_PS_HOLD,
+		.arginfo = QCOM_SCM_ARGS(1),
+		.args[0] = 0,
+		.owner = ARM_SMCCC_OWNER_SIP,
+	};
+
+	return qcom_scm_call_atomic(__scm->dev, &desc, NULL);
+}
+EXPORT_SYMBOL_GPL(qcom_scm_deassert_ps_hold);
+
 /**
  * qcom_scm_restore_sec_cfg_available() - Check if secure environment
  * supports restore security config interface.
