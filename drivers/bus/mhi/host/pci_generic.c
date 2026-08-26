@@ -3298,12 +3298,6 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 	struct mhi_controller *mhi_cntrl = &mhi_pdev->mhi_cntrl;
 	int err;
 
-	dev_info(&pdev->dev,
-		 "mhi_pci_runtime_suspend: ENTER usage=%d ee=0x%x started=%d\n",
-		 atomic_read(&dev->power.usage_count),
-		 (unsigned int)mhi_cntrl->ee,
-		 test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status));
-
 	/*
 	 * Runtime PM is already forbidden for the SDX55 fusion once it reaches
 	 * mission mode, but system suspend (s2idle) lands here directly and
@@ -3343,8 +3337,8 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
 				set_bit(MHI_PCI_DEV_FUSION_MHI_ONLY,
 					&mhi_pdev->status);
-				dev_info(&pdev->dev,
-					 "fusion modem entered M3 (D0 kept)\n");
+				dev_dbg(&pdev->dev,
+					"fusion modem entered M3 (D0 kept)\n");
 				return 0;
 			}
 			if (!sys)
@@ -3409,7 +3403,7 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
 				err);
 			queue_work(system_long_wq, &mhi_pdev->recovery_work);
 		} else {
-			dev_info(&pdev->dev, "fusion modem back in M0\n");
+			dev_dbg(&pdev->dev, "fusion modem back in M0\n");
 		}
 		pm_runtime_mark_last_busy(dev);
 		return 0;
