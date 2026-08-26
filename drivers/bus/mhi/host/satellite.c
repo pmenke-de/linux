@@ -171,6 +171,18 @@ struct mhi_sat_packet {
 	void *msg;
 };
 
+/*
+ * Consulted by the fusion suspend path: entering M3 while a satellite
+ * link is (re)initializing crashes the modem, so M3 is only attempted
+ * once every satellite state has been stable for a while.
+ */
+unsigned long mhi_sat_last_transition_jiffies;
+
+static void mhi_sat_mark_transition(void)
+{
+	WRITE_ONCE(mhi_sat_last_transition_jiffies, jiffies);
+}
+
 enum mhi_sat_state {
 	SAT_READY,		/* device presented, no link yet */
 	SAT_RUNNING,		/* remote can talk to the device */
@@ -765,6 +777,7 @@ static void mhi_sat_connect_worker(struct work_struct *work)
 	}
 	prev_state = sat_cntrl->state;
 	sat_cntrl->state = SAT_RUNNING;
+	mhi_sat_mark_transition();
 	spin_unlock_irq(&sat_cntrl->state_lock);
 
 	ret = mhi_sat_send_hello(sat_cntrl);
@@ -782,6 +795,7 @@ err:
 	spin_lock_irq(&sat_cntrl->state_lock);
 	if (MHI_SAT_ACTIVE(sat_cntrl))
 		sat_cntrl->state = prev_state;
+		mhi_sat_mark_transition();
 	spin_unlock_irq(&sat_cntrl->state_lock);
 }
 
@@ -1295,10 +1309,12 @@ static void mhi_sat_rpmsg_remove(struct rpmsg_device *rpdev)
 		spin_lock_irq(&sat_cntrl->state_lock);
 		if (MHI_SAT_IN_ERROR(sat_cntrl)) {
 			sat_cntrl->state = SAT_DISABLED;
+			mhi_sat_mark_transition();
 			spin_unlock_irq(&sat_cntrl->state_lock);
 			continue;
 		}
 		sat_cntrl->state = SAT_DISCONNECTED;
+		mhi_sat_mark_transition();
 		spin_unlock_irq(&sat_cntrl->state_lock);
 
 		flush_work(&sat_cntrl->connect_work);
@@ -1388,8 +1404,10 @@ static void mhi_sat_dev_status_cb(struct mhi_device *mhi_dev,
 		sat_cntrl->error_cookie = async_schedule(mhi_sat_error_worker,
 							 sat_cntrl);
 		sat_cntrl->state = SAT_FATAL_DETECT;
+		mhi_sat_mark_transition();
 	} else {
 		sat_cntrl->state = SAT_DISABLED;
+		mhi_sat_mark_transition();
 	}
 	spin_unlock_irqrestore(&sat_cntrl->state_lock, flags);
 }
@@ -1415,6 +1433,7 @@ static void mhi_sat_dev_remove(struct mhi_device *mhi_dev)
 	if (MHI_SAT_ALLOW_SYS_ERR(sat_cntrl))
 		send_sys_err = true;
 	sat_cntrl->state = SAT_ERROR;
+	mhi_sat_mark_transition();
 	spin_unlock_irq(&sat_cntrl->state_lock);
 
 	if (send_sys_err)

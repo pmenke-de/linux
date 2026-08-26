@@ -3195,6 +3195,20 @@ static const struct pci_error_handlers mhi_pci_err_handler = {
 	.reset_done = mhi_pci_reset_done,
 };
 
+/*
+ * The modem takes a fatal error if M3 freezes it while the ADSP is
+ * still (re)binding its satellite channels; require thirty quiet
+ * seconds on the satellite links before offering M3.
+ */
+extern unsigned long mhi_sat_last_transition_jiffies;
+
+static bool mhi_sat_settled(void)
+{
+	unsigned long last = READ_ONCE(mhi_sat_last_transition_jiffies);
+
+	return !last || time_after(jiffies, last + 30 * HZ);
+}
+
 static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -3243,7 +3257,8 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 		 * behaviour. D3hot remains forbidden either way.
 		 */
 		if (test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
-		    mhi_cntrl->ee == MHI_EE_AMSS) {
+		    mhi_cntrl->ee == MHI_EE_AMSS &&
+		    mhi_sat_settled()) {
 			err = mhi_pm_suspend(mhi_cntrl);
 			if (!err) {
 				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
