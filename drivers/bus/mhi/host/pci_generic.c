@@ -1716,7 +1716,7 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
 			pm_runtime_allow(&pdev->dev);
 			pm_runtime_put_noidle(&pdev->dev);
 			dev_info(&pdev->dev,
-				 "mission mode: enabled runtime PM autosuspend (2000ms), usage=%d\n",
+				 "mission mode: enabled runtime PM autosuspend (5000ms), usage=%d\n",
 				 atomic_read(&pdev->dev.power.usage_count));
 			schedule_delayed_work(&mhi_pdev->pm_probe_work,
 				      msecs_to_jiffies(100));
@@ -3321,28 +3321,20 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 	 * s2idle. Returning before MHI_PCI_DEV_SUSPENDED is set keeps the pair
 	 * symmetric, as mhi_pci_runtime_resume() returns early when it is clear.
 	 */
-	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info &&
-	    test_bit(MHI_PCI_DEV_SYS_SUSPEND, &mhi_pdev->status)) {
+	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info) {
+		bool sys = test_bit(MHI_PCI_DEV_SYS_SUSPEND, &mhi_pdev->status);
+
 		/*
-		 * Runtime suspend falls through to the generic M3+D3hot path
-		 * below (the vendor model, proven by the mission-mode cycle);
-		 * only system suspend keeps M0/D0 across s2idle.
-		 * Saving the state here is what keeps the modem powered: the
-		 * PCI core only calls pci_prepare_to_sleep() (D3hot) when the
-		 * driver has not saved state itself. Without this the device
-		 * is powered down behind our backs, the link does not come
-		 * back, and the modem is lost on the first system suspend.
+		 * Never let the PCI core move this device to D3hot (saving
+		 * the state ourselves is what prevents that): with MSI
+		 * delivery broken on this platform, a modem in D3hot cannot
+		 * signal the host and starves within ~2 minutes. The vendor
+		 * model is M3 with the device kept in D0, the link idling in
+		 * L1.2 on its own, and PCIE_WAKE# as the out-of-band wake.
 		 */
 		pci_save_state(pdev);
 
-		/*
-		 * Ask for M3, but never leave a half-state: the historical
-		 * refusal (dev_wake/pending_pkts held by the half-started
-		 * voice channels) is gone since the satellite rework, and a
-		 * failure here simply keeps the old M0-across-suspend
-		 * behaviour. D3hot remains forbidden either way.
-		 */
-		if (fusion_m3 &&
+		if ((sys ? fusion_m3 : true) &&
 		    test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
 		    mhi_cntrl->ee == MHI_EE_AMSS &&
 		    mhi_sat_settled()) {
@@ -3351,10 +3343,17 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
 				set_bit(MHI_PCI_DEV_FUSION_MHI_ONLY,
 					&mhi_pdev->status);
-				dev_info(&pdev->dev, "fusion modem entered M3 for suspend\n");
+				dev_info(&pdev->dev,
+					 "fusion modem entered M3 (D0 kept)\n");
 				return 0;
 			}
-			dev_warn(&pdev->dev, "fusion M3 refused (%d), staying in M0\n", err);
+			if (!sys)
+				return -EBUSY;
+			dev_warn(&pdev->dev,
+				 "fusion M3 refused (%d), staying in M0\n", err);
+		} else if (!sys) {
+			/* Not ready for M3 yet; have the PM core retry. */
+			return -EBUSY;
 		}
 		return 0;
 	}
@@ -3412,6 +3411,7 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
 		} else {
 			dev_info(&pdev->dev, "fusion modem back in M0\n");
 		}
+		pm_runtime_mark_last_busy(dev);
 		return 0;
 	}
 
