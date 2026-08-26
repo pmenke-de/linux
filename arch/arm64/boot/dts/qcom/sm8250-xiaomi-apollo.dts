@@ -35,6 +35,12 @@
 	qcom,msm-id = <QCOM_ID_SM8250 0x20000>;
 	qcom,board-id = <0x2a 0x00>;
 
+	breadcrumb {
+		compatible = "xiaomi,apollo-breadcrumb";
+		nvmem = <&pm8150_sdam_2>;
+		nvmem-names = "sdam";
+	};
+
 	aliases {
 		hsuart0 = &uart6;
 	};
@@ -1669,15 +1675,9 @@
 	};
 };
 
-/*
 &pm8150_sdam_2 {
 	status = "okay";
-
-	rtc_offset: rtc-offset@bc {
-		reg = <0xbc 0x4>;
-	};
 };
-*/
 
 &pm8150b_vbus {
 	regulator-min-microamp = <500000>;

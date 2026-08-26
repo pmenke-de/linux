@@ -199,6 +199,15 @@ config QCOM_SMD_RPM
 config QCOM_SMEM_STATE
 	bool
 
+config QCOM_APOLLO_BREADCRUMB
+	tristate "Power-loss breadcrumbs in PMIC SDAM"
+	depends on NVMEM
+	help
+	  Record kernel lifecycle events (boot, suspend, resume, shutdown,
+	  thermal-critical) in PMIC SDAM scratch memory that survives a
+	  cold power-off, and report the previous record at boot. Debug
+	  aid for unattended power loss.
+
 config QCOM_SMP2P_SLEEPSTATE
 	tristate "Qualcomm SMP2P sleep state notifier"
 	depends on QCOM_SMP2P

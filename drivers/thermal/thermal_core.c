@@ -24,6 +24,7 @@
 #define CREATE_TRACE_POINTS
 #include "thermal_trace.h"
 
+#include <soc/qcom/apollo_breadcrumb.h>
 #include "thermal_core.h"
 #include "thermal_hwmon.h"
 
@@ -322,6 +323,8 @@ static void thermal_zone_device_halt(struct thermal_zone_device *tz,
 	const char *msg = "Temperature too high";
 
 	dev_emerg(&tz->device, "%s: critical temperature reached\n", tz->type);
+
+	apollo_breadcrumb_thermal(tz->id, tz->temperature);
 
 	__hw_protection_trigger(msg, poweroff_delay_ms, action);
 }
