@@ -2409,6 +2409,8 @@ static int tx_macro_runtime_suspend(struct device *dev)
 	clk_disable_unprepare(tx->fsgen);
 	clk_disable_unprepare(tx->npl);
 	clk_disable_unprepare(tx->mclk);
+	clk_disable_unprepare(tx->dcodec);
+	clk_disable_unprepare(tx->macro);
 
 	return 0;
 }
@@ -2417,6 +2419,19 @@ static int tx_macro_runtime_resume(struct device *dev)
 {
 	struct tx_macro *tx = dev_get_drvdata(dev);
 	int ret;
+
+	ret = clk_prepare_enable(tx->macro);
+	if (ret) {
+		dev_err(dev, "unable to prepare macro\n");
+		return ret;
+	}
+
+	ret = clk_prepare_enable(tx->dcodec);
+	if (ret) {
+		clk_disable_unprepare(tx->macro);
+		dev_err(dev, "unable to prepare dcodec\n");
+		return ret;
+	}
 
 	ret = clk_prepare_enable(tx->mclk);
 	if (ret) {

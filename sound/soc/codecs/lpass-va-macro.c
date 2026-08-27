@@ -1732,6 +1732,8 @@ static int va_macro_runtime_suspend(struct device *dev)
 		clk_disable_unprepare(va->npl);
 
 	clk_disable_unprepare(va->mclk);
+	clk_disable_unprepare(va->dcodec);
+	clk_disable_unprepare(va->macro);
 
 	return 0;
 }
@@ -1740,6 +1742,19 @@ static int va_macro_runtime_resume(struct device *dev)
 {
 	struct va_macro *va = dev_get_drvdata(dev);
 	int ret;
+
+	ret = clk_prepare_enable(va->macro);
+	if (ret) {
+		dev_err(dev, "unable to prepare macro\n");
+		return ret;
+	}
+
+	ret = clk_prepare_enable(va->dcodec);
+	if (ret) {
+		clk_disable_unprepare(va->macro);
+		dev_err(dev, "unable to prepare dcodec\n");
+		return ret;
+	}
 
 	ret = clk_prepare_enable(va->mclk);
 	if (ret) {
