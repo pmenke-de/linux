@@ -139,6 +139,7 @@ struct vss_icommon_cmd_set_param_mfc_config {
 #define VSS_ICOMMON_CMD_SET_PARAM_V3			0x00013245
 #define VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO		0x00013253
 #define VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO		0x00013254
+#define VSS_PARAM_EC_REF_PORT_ENDPOINT_MEDIA_INFO	0x00013255
 
 /*
  * Media format for each endpoint. Unlike the channel info above this goes
@@ -545,7 +546,8 @@ static int q6cvp_set_media_format_one(struct q6voice_session *cvp, u32 param_id,
 	cmd.media_format.sample_rate = rate;
 
 	pr_info("q6cvp: %s endpoint port %#06x rate %u channels %u bits %u mapping %u,%u\n",
-		param_id == VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO ? "rx" : "tx",
+		param_id == VSS_PARAM_RX_PORT_ENDPOINT_MEDIA_INFO ? "rx" :
+		param_id == VSS_PARAM_EC_REF_PORT_ENDPOINT_MEDIA_INFO ? "ec_ref" : "tx",
 		port_id, cmd.media_format.sample_rate,
 		cmd.media_format.num_channels, cmd.media_format.bits_per_sample,
 		cmd.media_format.channel_mapping[0],
@@ -564,9 +566,29 @@ int q6cvp_set_media_format(struct q6voice_session *cvp, u16 tx_port, u16 rx_port
 	if (ret)
 		return ret;
 
+	ret = q6cvp_set_media_format_one(cvp,
+					 VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
+					 tx_port, tx_rate, tx_channels, tx_bits);
+	if (ret)
+		return ret;
+
+	/*
+	 * Describe the echo-reference endpoint too, or the vocproc has no
+	 * idea what format flows on the port it was told to take its
+	 * reference from. The vendor sends this whenever an external EC
+	 * reference is configured (common.ec_ref_ext); a missing
+	 * description leaves the wideband TX chain waiting on a reference
+	 * it cannot interpret - observed here as the 16 kHz input tap of
+	 * topology 0x1000fffc reading exactly zero. The reference carries
+	 * the render port's format.
+	 */
+	if (!ec_ref_port)
+		return 0;
+
 	return q6cvp_set_media_format_one(cvp,
-					  VSS_PARAM_TX_PORT_ENDPOINT_MEDIA_INFO,
-					  tx_port, tx_rate, tx_channels, tx_bits);
+					  VSS_PARAM_EC_REF_PORT_ENDPOINT_MEDIA_INFO,
+					  ec_ref_port, rx_rate, rx_channels,
+					  rx_bits);
 }
 EXPORT_SYMBOL_GPL(q6cvp_set_media_format);
 
