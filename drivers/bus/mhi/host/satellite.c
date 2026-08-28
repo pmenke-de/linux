@@ -346,8 +346,14 @@ static bool mhi_sat_chan_is_diag(struct mhi_sat_device *sat_dev)
 static void mhi_sat_chan_started(struct mhi_sat_device *sat_dev)
 {
 	sat_dev->chan_started = true;
+	/*
+	 * Synchronous: the remote starts ringing doorbells the moment the
+	 * start is granted, and an async resume left a window where those
+	 * doorbells landed on a runtime-suspended device - observed as the
+	 * modem's QMI stalling out the instant a call began.
+	 */
 	if (!mhi_sat_chan_is_diag(sat_dev))
-		pm_runtime_get(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
+		pm_runtime_get_sync(sat_dev->cntrl->mhi_cntrl->cntrl_dev);
 }
 
 static void mhi_sat_chan_stopped(struct mhi_sat_device *sat_dev)
@@ -620,10 +626,11 @@ static void mhi_sat_process_cmds(struct mhi_sat_cntrl *sat_cntrl,
 				break;
 			}
 
-			if (!mhi_prepare_for_transfer(sat_dev->mhi_dev)) {
-				mhi_sat_chan_started(sat_dev);
+			mhi_sat_chan_started(sat_dev);
+			if (!mhi_prepare_for_transfer(sat_dev->mhi_dev))
 				code = MHI_EV_CC_SUCCESS;
-			}
+			else
+				mhi_sat_chan_stopped(sat_dev);
 
 			dev_dbg(dev, "sat: START chan %d %s\n", id,
 				code == MHI_EV_CC_SUCCESS ? "ok" : "failed");
