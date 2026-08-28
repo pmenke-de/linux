@@ -186,6 +186,25 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 				__func__, ret);
 			goto end;
 		}
+
+		if (cpu_dai->id == TERTIARY_TDM_TX_0) {
+			struct snd_soc_dai *codec_dai;
+			int j;
+
+			/*
+			 * Each amp transmits its VI-sense / DSP-TX (the echo
+			 * reference) on its own slot, mirroring the RX assignment;
+			 * without it both amps drive the same slot.
+			 */
+			for_each_rtd_codec_dais(rtd, j, codec_dai) {
+				unsigned int codec_slot[2] = { !j, j };
+
+				ret = snd_soc_dai_set_channel_map(codec_dai, 2,
+							codec_slot, 0, NULL);
+				if (ret < 0)
+					goto end;
+			}
+		}
 	}
 
 end:
