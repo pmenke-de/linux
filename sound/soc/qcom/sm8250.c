@@ -164,7 +164,15 @@ static int sm8250_tdm_snd_hw_params(struct snd_pcm_substream *substream,
 
 		ret = 0;
 	} else {
-		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0xf, 0, slots, slot_width);
+		/*
+		 * Capture TDM (our amp ASP-TX echo-reference loopback on
+		 * TERT_TDM_TX_0): the slot mask must match the channel count,
+		 * exactly like the RX path. A hardcoded 0xf claimed four slots
+		 * for a two-channel port and AFE rejected the config with
+		 * -EINVAL at start.
+		 */
+		ret = snd_soc_dai_set_tdm_slot(cpu_dai, (1 << channels) - 1, 0,
+					       slots, slot_width);
 		if (ret < 0) {
 			dev_err(rtd->dev, "%s: failed to set tdm slot, err:%d\n",
 				__func__, ret);
@@ -220,6 +228,18 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 		 * exactly 24.576 MHz.
 		 */
 		rate->min = rate->max = 96000;
+		snd_mask_none(fmt);
+		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
+		break;
+	case TERTIARY_TDM_TX_0:
+		/*
+		 * The amp ASP-TX loopback (voice echo reference) shares the
+		 * tertiary frame with the RX playback, so it must clock the
+		 * same: 96 kHz / S24_LE / two channels. Defaulting to 48 kHz
+		 * makes AFE reject the port with -EINVAL at start.
+		 */
+		rate->min = rate->max = 96000;
+		channels->min = channels->max = 2;
 		snd_mask_none(fmt);
 		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S24_LE);
 		break;

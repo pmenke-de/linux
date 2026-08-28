@@ -832,6 +832,30 @@
 		};
 	};
 
+	/*
+	 * Echo reference: the CS35L41 amplifiers loop their actual processed
+	 * output back on ASP TX (their AMP Capture DAI), which lands on
+	 * TERT_TDM_TX_0. This carries the true acoustic content (post Class-H
+	 * and speaker-protection DSP) that the voice AEC needs as its
+	 * reference; the digital render on TERT_TDM_RX cannot cancel the echo
+	 * because it precedes all of that. Kept open for the duration of a
+	 * call so the vocproc's ec_ref port has live data.
+	 */
+	amp-loopback-dai-link {
+		link-name = "Tertiary TDM Capture";
+		cpu {
+			sound-dai = <&q6afedai TERTIARY_TDM_TX_0>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&cs35l41_speaker 0>, <&cs35l41_rcv 0>;
+		};
+	};
+
 	wcd-capture-dai-link {
 		link-name = "WCD Capture";
 		cpu {
@@ -872,6 +896,16 @@
 &q6afedai {
 	dai@56 {
 		reg = <TERTIARY_TDM_RX_0>;
+		qcom,tdm-sync-mode = <0>;
+		qcom,tdm-sync-src = <1>;
+		qcom,tdm-data-out = <0>;
+		qcom,tdm-invert-sync = <1>;
+		qcom,tdm-data-delay = <1>;
+		qcom,tdm-data-align = <0>;
+	};
+
+	dai@57 {
+		reg = <TERTIARY_TDM_TX_0>;
 		qcom,tdm-sync-mode = <0>;
 		qcom,tdm-sync-src = <1>;
 		qcom,tdm-data-out = <0>;
