@@ -11,6 +11,7 @@
 #include <linux/mhi.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/spinlock.h>
 #include <linux/workqueue.h>
 
 /* Sahara v2 protocol commands */
@@ -54,6 +55,22 @@
  */
 #define SAHARA_MAX_XFER_SZ		0x6000000U	/* 96 MiB */
 
+/*
+ * Number of data buffers kept in flight.
+ *
+ * Every chunk costs a round trip: fill a buffer, queue it, wait for the
+ * completion callback, fill the next one.  With a single buffer the modem
+ * spends that round trip idle, which on this phone held the 84 MiB of
+ * qdsp6sw.mbn to about 8 MB/s.  Queueing several buffers ahead lets the
+ * device pull the next chunk while the host prepares the one after it.
+ * MHI delivers completions of one channel in order, so the chunks arrive
+ * in the order they were queued.
+ *
+ * Eight buffers are 512 KiB of memory and sit well inside the 128-element
+ * TX ring the SAHARA channel is configured with.
+ */
+#define SAHARA_NUM_TX_BUF		8
+
 struct sahara_packet {
 	__le32 cmd;
 	__le32 length;
@@ -91,11 +108,15 @@ struct mhi_sahara_dev {
 	struct delayed_work	xfer_work;
 	struct sahara_packet	*rx;
 	struct sahara_packet	*ctrl_tx;
-	u8			*data_tx;
+	u8			*data_tx[SAHARA_NUM_TX_BUF];
 	const struct firmware	*fw;
 	size_t			rx_size;
+	/* xfer_lock guards the four fields below and the queueing order. */
+	spinlock_t		xfer_lock;
 	u32			xfer_offset;
 	u32			xfer_remaining;
+	u32			tx_next;
+	u32			tx_inflight;
 	bool			xfer_active;
 };
 
@@ -172,27 +193,37 @@ static void sahara_hello(struct mhi_sahara_dev *sdev)
 		      SAHARA_HELLO_LENGTH, MHI_EOT);
 }
 
-static int sahara_queue_read_data(struct mhi_sahara_dev *sdev)
+static bool sahara_is_data_buf(struct mhi_sahara_dev *sdev, void *addr)
+{
+	unsigned int i;
+
+	for (i = 0; i < SAHARA_NUM_TX_BUF; i++)
+		if (sdev->data_tx[i] == addr)
+			return true;
+
+	return false;
+}
+
+/* Queue one chunk. Caller holds xfer_lock. */
+static int sahara_queue_one(struct mhi_sahara_dev *sdev)
 {
 	struct device *dev = &sdev->mhi_dev->dev;
+	u8 *buf;
 	u32 chunk;
 	int ret;
 
-	if (!sdev->xfer_active || !sdev->xfer_remaining)
-		return 0;
-
+	buf = sdev->data_tx[sdev->tx_next];
 	chunk = min(sdev->xfer_remaining, (u32)SAHARA_MAX_PKT_SZ);
-	memcpy(sdev->data_tx, sdev->fw->data + sdev->xfer_offset, chunk);
+	memcpy(buf, sdev->fw->data + sdev->xfer_offset, chunk);
 
 	if (sdev->xfer_offset == le32_to_cpu(sdev->rx->read_data.offset))
 		dev_info(dev, "Sahara: tx[0][0..15] = %*ph\n",
-			 min_t(u32, 16, chunk), sdev->data_tx);
+			 min_t(u32, 16, chunk), buf);
 
 	sdev->xfer_offset += chunk;
 	sdev->xfer_remaining -= chunk;
 
-	ret = mhi_queue_buf(sdev->mhi_dev, DMA_TO_DEVICE, sdev->data_tx,
-			    chunk, MHI_EOT);
+	ret = mhi_queue_buf(sdev->mhi_dev, DMA_TO_DEVICE, buf, chunk, MHI_EOT);
 	if (ret) {
 		if (ret != -EAGAIN)
 			dev_err(dev, "Sahara: mhi_queue_buf TX failed: %d\n", ret);
@@ -204,10 +235,41 @@ static int sahara_queue_read_data(struct mhi_sahara_dev *sdev)
 		return ret;
 	}
 
+	sdev->tx_next = (sdev->tx_next + 1) % SAHARA_NUM_TX_BUF;
+	sdev->tx_inflight++;
+
 	if (!sdev->xfer_remaining)
 		sdev->xfer_active = false;
 
 	return 0;
+}
+
+/*
+ * Queue chunks until the pipe is full, the transfer is done, or the ring
+ * pushes back. -EAGAIN from the first chunk is handed to the caller so it
+ * can arrange a retry; once something is in flight the completion callback
+ * drives the rest, and a full ring is then not an error.
+ */
+static int sahara_queue_read_data(struct mhi_sahara_dev *sdev)
+{
+	unsigned long flags;
+	bool queued = false;
+	int ret = 0;
+
+	spin_lock_irqsave(&sdev->xfer_lock, flags);
+	while (sdev->xfer_active && sdev->xfer_remaining &&
+	       sdev->tx_inflight < SAHARA_NUM_TX_BUF) {
+		ret = sahara_queue_one(sdev);
+		if (ret)
+			break;
+		queued = true;
+	}
+	spin_unlock_irqrestore(&sdev->xfer_lock, flags);
+
+	if (ret && queued)
+		ret = 0;
+
+	return ret;
 }
 
 static void sahara_read_data(struct mhi_sahara_dev *sdev)
@@ -370,6 +432,7 @@ static int sahara_mhi_probe(struct mhi_device *mhi_dev,
 			    const struct mhi_device_id *id)
 {
 	struct mhi_sahara_dev *sdev;
+	unsigned int i;
 	int ret;
 
 	sdev = devm_kzalloc(&mhi_dev->dev, sizeof(*sdev), GFP_KERNEL);
@@ -384,10 +447,14 @@ static int sahara_mhi_probe(struct mhi_device *mhi_dev,
 	if (!sdev->ctrl_tx)
 		return -ENOMEM;
 
-	sdev->data_tx = devm_kzalloc(&mhi_dev->dev, SAHARA_MAX_PKT_SZ, GFP_KERNEL);
-	if (!sdev->data_tx)
-		return -ENOMEM;
+	for (i = 0; i < SAHARA_NUM_TX_BUF; i++) {
+		sdev->data_tx[i] = devm_kzalloc(&mhi_dev->dev,
+						SAHARA_MAX_PKT_SZ, GFP_KERNEL);
+		if (!sdev->data_tx[i])
+			return -ENOMEM;
+	}
 
+	spin_lock_init(&sdev->xfer_lock);
 	sdev->mhi_dev = mhi_dev;
 	INIT_WORK(&sdev->work, sahara_work);
 	INIT_DELAYED_WORK(&sdev->xfer_work, sahara_xfer_retry_work);
@@ -423,6 +490,7 @@ static void sahara_mhi_ul_xfer_cb(struct mhi_device *mhi_dev,
 				  struct mhi_result *result)
 {
 	struct mhi_sahara_dev *sdev = dev_get_drvdata(&mhi_dev->dev);
+	unsigned long flags;
 	int ret;
 
 	if (result->transaction_status) {
@@ -432,7 +500,15 @@ static void sahara_mhi_ul_xfer_cb(struct mhi_device *mhi_dev,
 		return;
 	}
 
-	if (result->buf_addr != sdev->data_tx || !sdev->xfer_remaining)
+	if (!sahara_is_data_buf(sdev, result->buf_addr))
+		return;
+
+	spin_lock_irqsave(&sdev->xfer_lock, flags);
+	if (sdev->tx_inflight)
+		sdev->tx_inflight--;
+	spin_unlock_irqrestore(&sdev->xfer_lock, flags);
+
+	if (!sdev->xfer_remaining)
 		return;
 
 	ret = sahara_queue_read_data(sdev);
