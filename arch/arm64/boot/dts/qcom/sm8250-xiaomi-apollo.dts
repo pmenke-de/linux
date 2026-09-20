@@ -1051,6 +1051,22 @@
 	};
 };
 
+&i2c11 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	vibrator@5a {
+		compatible = "awinic,aw8697";
+		reg = <0x5a>;
+
+		interrupts-extended = <&tlmm 129 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 130 GPIO_ACTIVE_LOW>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&vibrator_default>;
+	};
+};
+
 &i2c13 {
 	status = "disabled";
 };
@@ -2060,6 +2076,23 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
+	};
+
+	vibrator_default: vibrator-default-state {
+		int-pins {
+			pins = "gpio129";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-pull-up;
+			input-enable;
+		};
+
+		reset-pins {
+			pins = "gpio130";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+		};
 	};
 
 	wcd938x_reset_default: wcd938x-reset-default-state {
