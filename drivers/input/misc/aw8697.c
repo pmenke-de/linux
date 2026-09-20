@@ -186,19 +186,15 @@ static const struct regmap_config aw8697_regmap_config = {
 	.max_register = 0x7f,
 };
 
+/* Whether the chip reached standby on its own; the caller decides what that means. */
 static int aw8697_wait_enter_standby(struct aw8697_data *haptics)
 {
 	unsigned int reg_val;
-	int err;
 
-	err = regmap_read_poll_timeout(haptics->regmap, AW8697_GLB_STATE_REG, reg_val,
-				       (FIELD_GET(AW8697_GLB_STATE_MASK, reg_val) ==
+	return regmap_read_poll_timeout(haptics->regmap, AW8697_GLB_STATE_REG, reg_val,
+					(FIELD_GET(AW8697_GLB_STATE_MASK, reg_val) ==
 						AW8697_GLB_STATE_STANDBY),
-				       2000, 2000 * 100);
-	if (err)
-		dev_err(haptics->dev, "did not enter standby: %d\n", err);
-
-	return err;
+					2000, 2000 * 100);
 }
 
 static int aw8697_standby(struct aw8697_data *haptics)
@@ -219,16 +215,21 @@ static int aw8697_stop(struct aw8697_data *haptics)
 {
 	int err;
 
+	/*
+	 * Clearing GO ends playback at the end of the current period, and an
+	 * endless sequence does not reliably take it — standby is what stops
+	 * the chip. Waiting for it first is a courtesy to the actuator, which
+	 * then comes to rest on a period boundary instead of mid-swing, so a
+	 * timeout here is an ordinary outcome and not an error.
+	 */
 	err = regmap_write(haptics->regmap, AW8697_GO_REG, 0);
 	if (err) {
 		dev_err(haptics->dev, "Failed to stop playback: %d\n", err);
 		return err;
 	}
 
-	/* Playback ends on the current period, so give the chip that long */
-	err = aw8697_wait_enter_standby(haptics);
-	if (err)
-		dev_err(haptics->dev, "Failed to enter standby, forcing it\n");
+	if (aw8697_wait_enter_standby(haptics))
+		dev_dbg(haptics->dev, "still playing, forcing standby\n");
 
 	return aw8697_standby(haptics);
 }
@@ -401,9 +402,12 @@ static int aw8697_ram_init(struct aw8697_data *haptics)
 {
 	int err;
 
+	/* Writing SRAM while the sequencer reads it would corrupt the waveform */
 	err = aw8697_wait_enter_standby(haptics);
-	if (err)
+	if (err) {
+		dev_err(haptics->dev, "not in standby for the SRAM write: %d\n", err);
 		return err;
+	}
 
 	err = regmap_update_bits(haptics->regmap, AW8697_SYSCTRL_REG,
 				 AW8697_SYSCTRL_RAMINIT_MASK,
