@@ -1762,6 +1762,7 @@ static void nvt_ts_shutdown(struct spi_device *client)
 	nvt_irq_enable(false);
 
 	destroy_workqueue(ts->event_wq);
+	ts->event_wq = NULL;
 
 #if NVT_TOUCH_ESD_PROTECT
 	if (nvt_esd_check_wq) {
