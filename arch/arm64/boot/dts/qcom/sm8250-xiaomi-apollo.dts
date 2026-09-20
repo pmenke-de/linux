@@ -240,7 +240,7 @@
 			compatible = "ramoops";
 			reg = <0x00 0xb0000000 0x00 0x400000>;
 			record-size = <0x40000>;
-			console-size = <0x40000>;
+			console-size = <0x200000>;
 			ecc-size = <0x00>;
 			/*
 			 * Keep kmsg dumps for every reason through poweroff,
