@@ -312,19 +312,35 @@ static const struct file_operations esoc_req_eng_resp_fops = {
 static ssize_t last_esoc_req_read(struct file *filp, char __user *user_buf, size_t count,
 				  loff_t *ppos)
 {
+	const char *str = NULL;
 	unsigned int i;
 	unsigned long flags;
 
 	spin_lock_irqsave(&req_lock, flags);
 	for (i = 0; i < ARRAY_SIZE(req_to_str); i++) {
 		if (last_req == req_to_str[i].id) {
-			count = simple_read_from_buffer(user_buf, count, ppos, req_to_str[i].str,
-							strlen(req_to_str[i].str));
+			str = req_to_str[i].str;
 			break;
 		}
 	}
 	spin_unlock_irqrestore(&req_lock, flags);
-	return count;
+
+	/*
+	 * No request seen yet, or one the table does not know. Report end of
+	 * file: returning @count without having written anything makes every
+	 * read succeed with stale buffer contents, and a reader never reaches
+	 * the end. A cat(1) on this file produced gigabytes that way.
+	 */
+	if (!str)
+		return 0;
+
+	/*
+	 * Copy outside the lock. simple_read_from_buffer() reaches into user
+	 * memory, which may fault and sleep, and req_lock is taken with
+	 * interrupts disabled. The strings themselves are constant; only
+	 * last_req needs the lock.
+	 */
+	return simple_read_from_buffer(user_buf, count, ppos, str, strlen(str));
 }
 
 static const struct file_operations esoc_last_esoc_req_fops = {
