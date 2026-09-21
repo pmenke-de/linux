@@ -2556,6 +2556,27 @@ static void mhi_pci_esoc_power_off(void *priv, unsigned int flags)
 	timer_delete_sync(&mhi_pdev->msi_poll_timer);
 	mhi_pdev->msi_poll_enabled = false;
 
+	/*
+	 * Do this before the early return below, not after the teardown.
+	 *
+	 * ESOC is about to hard-reset the modem PMIC, and from that moment
+	 * the endpoint is gone: a config access to it does not fail, it
+	 * hangs the CPU until the watchdog resets the SoC -- no oops, no
+	 * panic, a console ring that simply stops. Runtime PM autosuspend is
+	 * exactly such an access, and it fires from a timer in the quiet
+	 * seconds after the power-down, which is where a restart was
+	 * observed to die.
+	 *
+	 * The early return happens whenever the controller was not marked
+	 * started -- after a power-on that gave up, or on a second
+	 * power-off -- and leaving autosuspend armed in those cases is what
+	 * made the failure look intermittent.
+	 */
+	pm_runtime_forbid(&pdev->dev);
+
+	/* Whatever comes next is a restart, not a first power-on. */
+	mhi_pdev->esoc_restarted = true;
+
 	if (!test_and_clear_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status))
 		return;
 
@@ -2584,20 +2605,6 @@ static void mhi_pci_esoc_power_off(void *priv, unsigned int flags)
 
 	mhi_power_down(mhi_cntrl, graceful);
 	mhi_unprepare_after_power_down(mhi_cntrl);
-
-	/*
-	 * Prevent runtime PM autosuspend from calling pci_disable_device()
-	 * while ESOC is about to warm-reset the modem.  If the device enters
-	 * D3cold before the recovery reset, the D3cold→D0 transition will
-	 * fail because the modem endpoint is dead — and on ARM64/DT platforms
-	 * the platform power transition is a no-op, so there is no way to
-	 * re-enable the link without a live endpoint.  Keeping the device in
-	 * D0 across the reset cycle avoids this entirely.
-	 */
-	pm_runtime_forbid(&pdev->dev);
-
-	/* Whatever comes next is a restart, not a first power-on. */
-	mhi_pdev->esoc_restarted = true;
 }
 
 static int mhi_pci_register_esoc(struct mhi_pci_device *mhi_pdev)
