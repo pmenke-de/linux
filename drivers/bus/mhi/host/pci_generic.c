@@ -1437,6 +1437,9 @@ struct mhi_pci_device {
 	const struct mhi_pci_dev_info *info;
 	struct esoc_desc *esoc_client;
 	struct esoc_client_hook esoc_hook;
+	/* Set once ESOC has powered the modem down: the next power-on is a
+	 * restart, and the endpoint is gone rather than merely idle. */
+	bool esoc_restarted;
 };
 
 static int mhi_pci_power_up(struct mhi_pci_device *mhi_pdev);
@@ -2451,7 +2454,25 @@ static int mhi_pci_esoc_power_on(void *priv, unsigned int flags)
 	 * endpoint is already alive, so be patient on every path: being
 	 * impatient here just means resetting a modem that was still booting.
 	 */
-	if (!mhi_pci_wait_endpoint_timeout(pdev, 30000)) {
+	/*
+	 * On a restart, do not go looking for the endpoint at all.
+	 *
+	 * The PMIC hard reset that precedes this has just taken the endpoint
+	 * away, and a config-space read in that window is what kills the AP:
+	 * usually the root complex answers it with all ones, but sometimes
+	 * the access faults and the machine goes down without printing a
+	 * word -- the console ring then ends between "ESOC requested MHI
+	 * power on" and the first line this poll would have written.
+	 * Measured on a Mi 10T: three of five restarts died there, always in
+	 * that same gap.
+	 *
+	 * Nothing is lost by skipping it. The link really is down after a
+	 * hard reset, so the poll below spends its full 30 seconds and then
+	 * rebuilds the link anyway. Rebuilding it straight away is both safe
+	 * and half a minute faster.
+	 */
+	if (mhi_pdev->esoc_restarted ||
+	    !mhi_pci_wait_endpoint_timeout(pdev, 30000)) {
 		/*
 		 * Endpoint stayed dark.  As a last resort toggle PERST# to
 		 * cold-reset the modem down to PBL so it re-enumerates like
@@ -2472,8 +2493,9 @@ static int mhi_pci_esoc_power_on(void *priv, unsigned int flags)
 		 * out from under a live device is what hung the AP when this
 		 * was attempted by hand via qcom_pcie_retrain_link().
 		 */
-		dev_info(&pdev->dev,
-			 "endpoint dark after reset, rebuilding PCIe link\n");
+		dev_info(&pdev->dev, "%s, rebuilding PCIe link\n",
+			 mhi_pdev->esoc_restarted ? "restart after power-down"
+						  : "endpoint dark after reset");
 		err = qcom_pcie_relink(pdev);
 		if (err) {
 			dev_err(&pdev->dev,
@@ -2573,6 +2595,9 @@ static void mhi_pci_esoc_power_off(void *priv, unsigned int flags)
 	 * D0 across the reset cycle avoids this entirely.
 	 */
 	pm_runtime_forbid(&pdev->dev);
+
+	/* Whatever comes next is a restart, not a first power-on. */
+	mhi_pdev->esoc_restarted = true;
 }
 
 static int mhi_pci_register_esoc(struct mhi_pci_device *mhi_pdev)
