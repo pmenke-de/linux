@@ -1791,6 +1791,17 @@
 	};
 };
 
+/*
+ * Reboot reasons, the way every other SM8250 board in tree spells them: the
+ * qcom-pon driver stores the magic in PON_SOFT_RB_SPARE, and ABL reads it on
+ * the way up. Without these two, "reboot bootloader" is an ordinary reboot and
+ * the fastboot mode is only reachable by holding Vol-Down and Power.
+ */
+&pon {
+	mode-bootloader = <0x2>;
+	mode-recovery = <0x1>;
+};
+
 &pon_pwrkey {
 	status = "okay";
 };
