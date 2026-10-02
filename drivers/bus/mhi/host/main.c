@@ -486,25 +486,48 @@ irqreturn_t mhi_irq_handler(int irq_number, void *dev)
  * on Qualcomm SM8250 where the SMMU TBU intercepts MSI TLPs before the
  * DW PCIe iMSI-RX module can catch them).  Call this periodically from
  * a timer to process pending events without MSI.
+ *
+ * Returns the number of event rings that had pending events, so a caller
+ * driving this from a timer can tell an idle device from a busy one and
+ * pick its interval accordingly.
  */
-void mhi_poll_events(struct mhi_controller *mhi_cntrl)
+int mhi_poll_events(struct mhi_controller *mhi_cntrl)
 {
 	struct mhi_event *mhi_event;
-	int i;
+	int i, pending = 0;
 
 	/* Simulate BHI/state-change vector: wake up state waiters */
 	wake_up_all(&mhi_cntrl->state_event);
 
 	/* Poll each event ring */
 	if (!mhi_cntrl->mhi_ctxt)
-		return;
+		return 0;
 
 	mhi_event = mhi_cntrl->mhi_event;
 	for (i = 0; i < mhi_cntrl->total_ev_rings; i++, mhi_event++) {
+		struct mhi_event_ctxt *er_ctxt;
+		struct mhi_ring *ev_ring;
+		dma_addr_t ptr;
+
 		if (mhi_event->offload_ev)
 			continue;
+
+		/*
+		 * The handler itself reports IRQ_HANDLED either way, so ask the
+		 * ring the same question it asks: has the device moved its read
+		 * pointer past ours?
+		 */
+		ev_ring = &mhi_event->ring;
+		er_ctxt = &mhi_cntrl->mhi_ctxt->er_ctxt[mhi_event->er_index];
+		ptr = le64_to_cpu(er_ctxt->rp);
+		if (is_valid_ring_ptr(ev_ring, ptr) &&
+		    ev_ring->rp != mhi_to_virtual(ev_ring, ptr))
+			pending++;
+
 		mhi_irq_handler(0, mhi_event);
 	}
+
+	return pending;
 }
 EXPORT_SYMBOL_GPL(mhi_poll_events);
 

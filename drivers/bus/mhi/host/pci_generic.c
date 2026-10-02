@@ -1418,6 +1418,16 @@ enum mhi_pci_device_status {
  * polls event rings to compensate for the missing MSI delivery.
  */
 #define MHI_MSI_POLL_INTERVAL_MS	2
+/*
+ * ... and it backs off while the device has nothing to say.  That matters
+ * beyond the wakeups themselves: SM8250 collapses its CPU cluster rail only
+ * when every core is expected to stay idle for 10 ms (cluster_sleep_0 in the
+ * devicetree), so a 2 ms timer does not make that window unlikely, it makes it
+ * impossible.  Backing off to 32 ms lets the rail collapse while the modem
+ * idles; the first event after that costs one interval of latency, after
+ * which the poll is back at 2 ms.
+ */
+#define MHI_MSI_POLL_IDLE_MAX_MS	32
 
 struct mhi_pci_device {
 	struct gpio_desc *wake_gpio;
@@ -1432,6 +1442,7 @@ struct mhi_pci_device {
 	struct timer_list msi_poll_timer;
 	bool msi_poll_enabled;
 	bool msi_poll_saw_m0;
+	unsigned int msi_poll_interval_ms;
 	unsigned long status;
 	bool reset_on_remove;
 	const struct mhi_pci_dev_info *info;
@@ -2798,7 +2809,7 @@ static void mhi_pci_msi_poll(struct timer_list *t)
 
 	/* Always reschedule first — ensures the timer never silently dies */
 	mod_timer(&mhi_pdev->msi_poll_timer,
-		  jiffies + msecs_to_jiffies(MHI_MSI_POLL_INTERVAL_MS));
+		  jiffies + msecs_to_jiffies(mhi_pdev->msi_poll_interval_ms));
 
 	/*
 	 * Check HW state BEFORE the STARTED gate — MHI core error handling
@@ -2823,7 +2834,18 @@ static void mhi_pci_msi_poll(struct timer_list *t)
 	    test_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status))
 		return;
 
-	mhi_poll_events(mhi_cntrl);
+	if (mhi_poll_events(mhi_cntrl)) {
+		/*
+		 * Something arrived, so more is likely on its way: go back to
+		 * the short interval and pull the already armed timer forward
+		 * with it.
+		 */
+		mhi_pdev->msi_poll_interval_ms = MHI_MSI_POLL_INTERVAL_MS;
+		mod_timer(&mhi_pdev->msi_poll_timer,
+			  jiffies + msecs_to_jiffies(MHI_MSI_POLL_INTERVAL_MS));
+	} else if (mhi_pdev->msi_poll_interval_ms < MHI_MSI_POLL_IDLE_MAX_MS) {
+		mhi_pdev->msi_poll_interval_ms *= 2;
+	}
 }
 
 static void mhi_pci_start_msi_poll(struct mhi_pci_device *mhi_pdev)
@@ -2841,10 +2863,11 @@ static void mhi_pci_start_msi_poll(struct mhi_pci_device *mhi_pdev)
 	}
 
 	dev_info(mhi_cntrl->cntrl_dev,
-		 "IOMMU DMA domain detected (type %d), enabling MSI poll timer (%d ms)\n",
-		 domain->type, MHI_MSI_POLL_INTERVAL_MS);
+		 "IOMMU DMA domain detected (type %d), enabling MSI poll timer (%d-%d ms)\n",
+		 domain->type, MHI_MSI_POLL_INTERVAL_MS, MHI_MSI_POLL_IDLE_MAX_MS);
 	mhi_pdev->msi_poll_enabled = true;
 	mhi_pdev->msi_poll_saw_m0 = false;
+	mhi_pdev->msi_poll_interval_ms = MHI_MSI_POLL_INTERVAL_MS;
 	mod_timer(&mhi_pdev->msi_poll_timer,
 		  jiffies + msecs_to_jiffies(MHI_MSI_POLL_INTERVAL_MS));
 }
@@ -2919,6 +2942,7 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	INIT_DELAYED_WORK(&mhi_pdev->link_retrain_work, mhi_pci_link_retrain_work);
 	INIT_DELAYED_WORK(&mhi_pdev->pm_probe_work, mhi_pci_pm_probe_work);
 	timer_setup(&mhi_pdev->msi_poll_timer, mhi_pci_msi_poll, 0);
+	mhi_pdev->msi_poll_interval_ms = MHI_MSI_POLL_INTERVAL_MS;
 
 	if (pdev->is_virtfn && info->vf_config)
 		mhi_cntrl_config = info->vf_config;

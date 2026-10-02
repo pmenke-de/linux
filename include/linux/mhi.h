@@ -748,7 +748,7 @@ enum mhi_state mhi_get_mhi_state(struct mhi_controller *mhi_cntrl);
  * mhi_poll_events - Poll all MHI event rings without MSI
  * @mhi_cntrl: MHI controller
  */
-void mhi_poll_events(struct mhi_controller *mhi_cntrl);
+int mhi_poll_events(struct mhi_controller *mhi_cntrl);
 
 /**
  * mhi_soc_reset - Trigger a device reset. This can be used as a last resort
