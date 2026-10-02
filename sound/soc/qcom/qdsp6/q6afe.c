@@ -382,6 +382,8 @@ struct q6afe {
 	wait_queue_head_t wait;
 	struct list_head port_list;
 	spinlock_t port_list_lock;
+	/* handle from the last LPASS core vote, see q6afe_vote_lpass_core_hw() */
+	uint32_t lpass_core_hw_handle;
 };
 
 struct afe_port_cmd_device_start {
@@ -648,6 +650,10 @@ struct q6afe_port {
 struct afe_cmd_remote_lpass_core_hw_vote_request {
 	uint32_t  hw_block_id;
 	char client_name[8];
+} __packed;
+
+struct afe_cmd_rsp_remote_lpass_core_hw_vote_request {
+	uint32_t client_handle;
 } __packed;
 
 struct afe_cmd_remote_lpass_core_hw_devote_request {
@@ -994,17 +1000,33 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 				wake_up(&afe->wait);
 			}
 			break;
+		case AFE_CMD_REMOTE_LPASS_CORE_HW_DEVOTE_REQUEST:
+			/* nobody waits for it; an error was reported above */
+			break;
 		default:
 			dev_err(afe->dev, "Unknown cmd 0x%x\n",	res->opcode);
 			break;
 		}
 	}
 		break;
-	case AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
+	case AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST: {
+		/*
+		 * Not a basic result: the payload is the client handle alone,
+		 * which the matching devote has to quote. It carries no status.
+		 */
+		const struct afe_cmd_rsp_remote_lpass_core_hw_vote_request *rsp =
+			data->payload;
+
 		afe->result.opcode = hdr->opcode;
-		afe->result.status = res->status;
+		if (data->payload_size >= sizeof(*rsp)) {
+			afe->lpass_core_hw_handle = rsp->client_handle;
+			afe->result.status = 0;
+		} else {
+			afe->result.status = ADSP_EBADPARAM;
+		}
 		wake_up(&afe->wait);
 		break;
+	}
 	default:
 		break;
 	}
@@ -1899,6 +1921,9 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 			       AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST);
 	if (ret)
 		dev_err(afe->dev, "AFE failed to vote (%d)\n", hw_block_id);
+	else
+		/* votes come from clk .prepare, serialised by the clock core */
+		*client_handle = afe->lpass_core_hw_handle;
 
 	return ret;
 }
