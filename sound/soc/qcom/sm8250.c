@@ -484,9 +484,46 @@ static int sm8250_snd_hw_free(struct snd_pcm_substream *substream)
 	return qcom_snd_sdw_hw_free(substream, &data->stream_prepared[cpu_dai->id]);
 }
 
+/* The bit clock each MI2S/TDM port gets in sm8250_snd_startup(). */
+static int sm8250_bit_clock(int dai_id)
+{
+	switch (dai_id) {
+	case PRIMARY_MI2S_RX:
+		return Q6AFE_LPASS_CLK_ID_PRI_MI2S_IBIT;
+	case SECONDARY_MI2S_RX:
+		return Q6AFE_LPASS_CLK_ID_SEC_MI2S_IBIT;
+	case TERTIARY_MI2S_RX:
+		return Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT;
+	case QUINARY_MI2S_RX:
+		return Q6AFE_LPASS_CLK_ID_QUI_MI2S_IBIT;
+	case TERTIARY_TDM_RX_0:
+		return Q6AFE_LPASS_CLK_ID_TER_TDM_IBIT;
+	case PRIMARY_TDM_RX_0:
+		return Q6AFE_LPASS_CLK_ID_PRI_TDM_IBIT;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Switch off what startup switched on: a bit clock left running keeps the
+ * ADSP awake, also with every stream closed.
+ */
+static void sm8250_snd_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	int clk_id = sm8250_bit_clock(cpu_dai->id);
+
+	if (clk_id)
+		snd_soc_dai_set_sysclk(cpu_dai, clk_id, 0,
+				       SNDRV_PCM_STREAM_PLAYBACK);
+	qcom_snd_sdw_shutdown(substream);
+}
+
 static const struct snd_soc_ops sm8250_be_ops = {
 	.startup = sm8250_snd_startup,
-	.shutdown = qcom_snd_sdw_shutdown,
+	.shutdown = sm8250_snd_shutdown,
 	.hw_params = sm8250_snd_hw_params,
 	.hw_free = sm8250_snd_hw_free,
 	.prepare = sm8250_snd_prepare,
