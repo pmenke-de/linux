@@ -41,6 +41,9 @@ int qcom_pcie_link_cycle(struct pci_dev *pdev);
 static bool fusion_boot_cycle = true;
 module_param(fusion_boot_cycle, bool, 0444);
 MODULE_PARM_DESC(fusion_boot_cycle, "Run the vendor-style forced M3+D3hot cycle and link cycle at mission mode on the SDX55 fusion (lets the modem switch to AMSS PCIe PHY settings); off keeps the modem in M0 for good");
+static bool fusion_msi_poll;
+module_param(fusion_msi_poll, bool, 0644);
+MODULE_PARM_DESC(fusion_msi_poll, "Poll the event rings of the SDX55 fusion instead of relying on its MSIs (for a device tree without a working MSI path)");
 
 
 /* PCI VID definitions */
@@ -2863,6 +2866,9 @@ static void mhi_pci_start_msi_poll(struct mhi_pci_device *mhi_pdev)
 	struct mhi_controller *mhi_cntrl = &mhi_pdev->mhi_cntrl;
 	struct iommu_domain *domain;
 
+	if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info && !fusion_msi_poll)
+		return;
+
 	domain = iommu_get_domain_for_dev(mhi_cntrl->cntrl_dev);
 	if (!domain || domain->type == IOMMU_DOMAIN_IDENTITY ||
 	    domain->type == IOMMU_DOMAIN_BLOCKED) {
@@ -3403,6 +3409,13 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
 				set_bit(MHI_PCI_DEV_FUSION_MHI_ONLY,
 					&mhi_pdev->status);
+				/*
+				 * In M3 the modem speaks up over WAKE#; a poll
+				 * would only pull the link out of L1.2 every
+				 * interval. Restarted on resume.
+				 */
+				mhi_pdev->msi_poll_enabled = false;
+				timer_delete(&mhi_pdev->msi_poll_timer);
 				dev_dbg(&pdev->dev,
 					"fusion modem entered M3 (D0 kept)\n");
 				return 0;
@@ -3462,6 +3475,8 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
 		 * The device stayed in D0 with its state saved, so there is
 		 * nothing PCI-level to undo - only the M3 -> M0 transition.
 		 */
+		/* With polling on, the M3 -> M0 handshake is only seen through it. */
+		mhi_pci_start_msi_poll(mhi_pdev);
 		err = mhi_pm_resume(mhi_cntrl);
 		if (err) {
 			dev_err(&pdev->dev,

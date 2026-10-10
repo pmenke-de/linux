@@ -1709,7 +1709,19 @@
 			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
 };
 
+/*
+ * MSIs of the SDX55 as the vendor delivers them: a write to the GIC's SETSPI
+ * doorbell, through the SMMU. The DWC iMSI-RX sees a single MSI from the
+ * modem's PBL and none in mission mode.
+ */
+&intc {
+	msi-controller;
+	mbi-alias = <0x0 0x17a10000>;
+	mbi-ranges = <864 32>;
+};
+
 &pcie2 {
+	msi-parent = <&intc>;
 	/* MDM2AP PCIe WAKE#: the SDX55 pulls this low to ask for the host */
 	wake-gpios = <&tlmm 87 GPIO_ACTIVE_LOW>;
 	status = "okay";
