@@ -5020,13 +5020,17 @@ err_disable_pipe_clk:
 /*
  * PCIe DRV: while the ADSP owns the link in L1ss, the AP drops the PHY's
  * clocks without powering the PHY down or resetting it, and gets them back
- * before anyone touches the link again. The reference clock runs on, as the
- * vendor keeps it: it is "suppressible", the hardware gates it at XO
- * shutdown.
+ * before anyone touches the link again. The reference clock and the
+ * reference generator run on, as the vendor keeps them: both are
+ * "suppressible", the hardware gates them at XO shutdown. Without refgen
+ * no MSI from the endpoint arrives while the ADSP holds the link, so the
+ * endpoint cannot wake the AP, and an SDX55 with data to send raises
+ * ERRFATAL. A wake from the AP side works either way, because resume
+ * enables refgen first.
  */
 static bool qmp_pcie_drv_keep_clk(const char *id)
 {
-	return !strcmp(id, "ref");
+	return !strcmp(id, "ref") || !strcmp(id, "refgen");
 }
 
 int qmp_pcie_drv_clocks(struct phy *phy, bool off)
