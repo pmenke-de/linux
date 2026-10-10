@@ -2327,7 +2327,8 @@
 
 &venus {
 	firmware-name = "postmarketos/venus.mbn";
-	status = "okay";
+	/* no firmware on the device; a failed probe leaks video_cc_mvs0c_clk */
+	status = "disabled";
 };
 
 /* ----- Modem (SDX55m via PCIe2 / MHI / ESOC) ----- */
@@ -2357,3 +2358,12 @@
 		};
 	};
 };
+
+/*
+ * The camera PMIC (pm8008) of this unit does not answer, so no sensor ever
+ * probes; the camera clock controller would only hold MMCX up.
+ */
+&camss { status = "disabled"; };
+&cci0 { status = "disabled"; };
+&cci1 { status = "disabled"; };
+&camcc { status = "disabled"; };
