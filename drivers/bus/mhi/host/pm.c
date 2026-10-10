@@ -1035,6 +1035,102 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
 }
 EXPORT_SYMBOL_GPL(mhi_pm_suspend);
 
+/* Event tasklets off, or back on and run once (fast suspend window). */
+static void mhi_fast_events(struct mhi_controller *mhi_cntrl, bool on)
+{
+	struct mhi_event *mhi_event = mhi_cntrl->mhi_event;
+	int i;
+
+	for (i = 0; i < mhi_cntrl->total_ev_rings; i++, mhi_event++) {
+		if (mhi_event->offload_ev)
+			continue;
+		if (on) {
+			tasklet_enable(&mhi_event->task);
+			mhi_irq_handler(0, mhi_event);
+		} else {
+			tasklet_disable(&mhi_event->task);
+		}
+	}
+}
+
+/*
+ * After the vendor's mhi_pm_fast_suspend(): suspend the host side
+ * only. The device is not told -- it stays in M0/M2 while its link idles in
+ * L1ss under another processor (PCIe DRV). Moving the host's PM state to M3
+ * is what keeps doorbells and register access away until the fast resume.
+ */
+int mhi_pm_fast_suspend(struct mhi_controller *mhi_cntrl)
+{
+	struct mhi_chan *itr, *tmp;
+	enum mhi_pm_state state;
+
+	if (mhi_cntrl->pm_state == MHI_PM_DISABLE)
+		return -EINVAL;
+	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+		return -EIO;
+
+	if (atomic_read(&mhi_cntrl->pending_pkts))
+		return -EBUSY;
+
+	/*
+	 * As the vendor does: hold event processing while the state switches,
+	 * check the votes again under the lock, and afterwards run the
+	 * handlers once. An event that came in meanwhile then finds the host
+	 * in M3 and triggers the resume instead of being lost.
+	 */
+	mhi_fast_events(mhi_cntrl, false);
+	write_lock_irq(&mhi_cntrl->pm_lock);
+	if (atomic_read(&mhi_cntrl->pending_pkts)) {
+		write_unlock_irq(&mhi_cntrl->pm_lock);
+		mhi_fast_events(mhi_cntrl, true);
+		return -EBUSY;
+	}
+	state = mhi_tryset_pm_state(mhi_cntrl, MHI_PM_M3_ENTER);
+	if (state == MHI_PM_M3_ENTER)
+		state = mhi_tryset_pm_state(mhi_cntrl, MHI_PM_M3);
+	write_unlock_irq(&mhi_cntrl->pm_lock);
+	mhi_fast_events(mhi_cntrl, true);
+	if (state != MHI_PM_M3)
+		return -EIO;
+
+	list_for_each_entry_safe(itr, tmp, &mhi_cntrl->lpm_chans, node) {
+		mutex_lock(&itr->mutex);
+		if (itr->mhi_dev)
+			mhi_notify(itr->mhi_dev, MHI_CB_LPM_ENTER);
+		mutex_unlock(&itr->mutex);
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mhi_pm_fast_suspend);
+
+/* The counterpart: host back to M0, doorbells rung again, device untouched. */
+int mhi_pm_fast_resume(struct mhi_controller *mhi_cntrl)
+{
+	struct mhi_chan *itr, *tmp;
+	enum mhi_pm_state state;
+
+	if (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
+		return -EIO;
+
+	list_for_each_entry_safe(itr, tmp, &mhi_cntrl->lpm_chans, node) {
+		mutex_lock(&itr->mutex);
+		if (itr->mhi_dev)
+			mhi_notify(itr->mhi_dev, MHI_CB_LPM_EXIT);
+		mutex_unlock(&itr->mutex);
+	}
+
+	write_lock_irq(&mhi_cntrl->pm_lock);
+	state = mhi_tryset_pm_state(mhi_cntrl, MHI_PM_M3_EXIT);
+	write_unlock_irq(&mhi_cntrl->pm_lock);
+	if (state != MHI_PM_M3_EXIT)
+		return -EIO;
+
+	/* Sets PM M0 and rings the event and channel doorbells. */
+	mhi_pm_m0_transition(mhi_cntrl);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mhi_pm_fast_resume);
+
 static int __mhi_pm_resume(struct mhi_controller *mhi_cntrl, bool force)
 {
 	struct mhi_chan *itr, *tmp;

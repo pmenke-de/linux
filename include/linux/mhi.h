@@ -718,6 +718,9 @@ int mhi_pm_resume(struct mhi_controller *mhi_cntrl);
  */
 int mhi_pm_resume_force(struct mhi_controller *mhi_cntrl);
 
+int mhi_pm_fast_suspend(struct mhi_controller *mhi_cntrl);
+int mhi_pm_fast_resume(struct mhi_controller *mhi_cntrl);
+
 /**
  * mhi_download_rddm_image - Download ramdump image from device for
  *                           debugging purpose.

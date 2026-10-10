@@ -19,6 +19,7 @@
 #include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/pm_runtime.h>
+#include <linux/pm_domain.h>
 #include <linux/gpio/consumer.h>
 #include <linux/of.h>
 #include <linux/sizes.h>
@@ -34,6 +35,8 @@
 int qcom_pcie_retrain_link(struct pci_dev *pdev);
 int qcom_pcie_perst_toggle(struct pci_dev *pdev);
 int qcom_pcie_relink(struct pci_dev *pdev);
+int qcom_pcie_drv_suspend(struct pci_dev *pdev);
+int qcom_pcie_drv_resume(struct pci_dev *pdev);
 int qcom_pcie_link_cycle(struct pci_dev *pdev);
 
 #define HEALTH_CHECK_PERIOD (HZ * 2)
@@ -1413,6 +1416,7 @@ enum mhi_pci_device_status {
 	MHI_PCI_DEV_AUTOSUSPEND_SET,
 	MHI_PCI_DEV_SYS_SUSPEND,	/* inside system (not runtime) suspend */
 	MHI_PCI_DEV_FUSION_MHI_ONLY,	/* suspended at MHI level only, still D0 */
+	MHI_PCI_DEV_FUSION_DRV,		/* link handed to the ADSP (PCIe DRV) */
 };
 
 /*
@@ -2062,20 +2066,9 @@ static void mhi_pci_pm_probe_work(struct work_struct *work)
 				 mhi_pdev->pm_probe_iter, ret);
 
 			/*
-			 * Keep exactly one proven M3 cycle then pin the link
-			 * back in M0. Testing confirmed the post-mission
-			 * ERRFATAL timing is invariant to runtime PM state
-			 * (identical crash time with continuous M3 cycling or
-			 * no further cycles), so long-lived M3 is neither
-			 * required nor harmful — just leave the link in the
-			 * simplest state.
+			 * One proven M3 cycle is enough; from here runtime PM
+			 * decides, and an idle modem goes to PCIe DRV.
 			 */
-			if (!ret && mhi_pdev->info == &mhi_qcom_sdx55_fusion_info) {
-				pm_runtime_forbid(dev);
-				dev_info(dev,
-					 "pm_probe[%d]: disabled runtime PM after one successful M3 cycle on SDX55 fusion\n",
-					 mhi_pdev->pm_probe_iter);
-			}
 		} else {
 			dev_info(dev, "pm_probe[%d]: forced M3 failed: %d\n",
 				 mhi_pdev->pm_probe_iter, ret);
@@ -2938,6 +2931,30 @@ static int mhi_pci_power_up(struct mhi_pci_device *mhi_pdev)
 	return mhi_sync_power_up(mhi_cntrl);
 }
 
+/*
+ * Runtime resume of the SDX55 fusion while its link is with the ADSP. The PCI
+ * core touches config space before the driver's callback runs, so the link
+ * has to come back here, ahead of the bus.
+ */
+static struct dev_pm_domain mhi_pci_fusion_pm_domain;
+
+static int mhi_pci_fusion_runtime_resume(struct device *dev)
+{
+	struct mhi_pci_device *mhi_pdev = dev_get_drvdata(dev);
+
+	if (mhi_pdev && test_bit(MHI_PCI_DEV_FUSION_DRV, &mhi_pdev->status))
+		qcom_pcie_drv_resume(to_pci_dev(dev));
+	return dev->bus->pm->runtime_resume(dev);
+}
+
+static void mhi_pci_fusion_set_pm_domain(struct pci_dev *pdev)
+{
+	mhi_pci_fusion_pm_domain.ops = *pdev->dev.bus->pm;
+	mhi_pci_fusion_pm_domain.ops.runtime_resume =
+		mhi_pci_fusion_runtime_resume;
+	dev_pm_domain_set(&pdev->dev, &mhi_pci_fusion_pm_domain);
+}
+
 static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	const struct mhi_pci_dev_info *info = (struct mhi_pci_dev_info *) id->driver_data;
@@ -2976,6 +2993,8 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			  info->vf_dma_data_width : info->dma_data_width;
 
 	mhi_cntrl->cntrl_dev = &pdev->dev;
+	if (info == &mhi_qcom_sdx55_fusion_info)
+		mhi_pci_fusion_set_pm_domain(pdev);
 	if (info->iova_stop) {
 		mhi_cntrl->iova_start = info->iova_start;
 		mhi_cntrl->iova_stop = info->iova_stop;
@@ -3400,6 +3419,24 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
 		 */
 		pci_save_state(pdev);
 
+		if (!sys && test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
+		    mhi_cntrl->ee == MHI_EE_AMSS && mhi_sat_settled() &&
+		    !mhi_pm_fast_suspend(mhi_cntrl)) {
+			/*
+			 * As the vendor does it: the modem is never told about
+			 * M3; the host stops, the link goes to the ADSP and
+			 * idles in L1ss on its own (PCIe DRV).
+			 */
+			mhi_pdev->msi_poll_enabled = false;
+			timer_delete(&mhi_pdev->msi_poll_timer);
+			if (!qcom_pcie_drv_suspend(pdev)) {
+				set_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
+				set_bit(MHI_PCI_DEV_FUSION_DRV, &mhi_pdev->status);
+				return 0;
+			}
+			mhi_pci_start_msi_poll(mhi_pdev);
+			mhi_pm_fast_resume(mhi_cntrl);
+		}
 		if ((sys ? fusion_m3 : true) &&
 		    test_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status) &&
 		    mhi_cntrl->ee == MHI_EE_AMSS &&
@@ -3469,6 +3506,18 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
 
 	if (!test_and_clear_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status))
 		return 0;
+
+	if (test_and_clear_bit(MHI_PCI_DEV_FUSION_DRV, &mhi_pdev->status)) {
+		/* the link is back already: mhi_pci_fusion_runtime_resume() */
+		mhi_pci_start_msi_poll(mhi_pdev);
+		err = mhi_pm_fast_resume(mhi_cntrl);
+		if (err) {
+			dev_err(&pdev->dev, "DRV fast resume failed (%d)\n", err);
+			queue_work(system_long_wq, &mhi_pdev->recovery_work);
+		}
+		pm_runtime_mark_last_busy(dev);
+		return 0;
+	}
 
 	if (test_and_clear_bit(MHI_PCI_DEV_FUSION_MHI_ONLY, &mhi_pdev->status)) {
 		/*

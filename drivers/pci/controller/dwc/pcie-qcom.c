@@ -31,6 +31,7 @@
 #include <linux/phy/pcie.h>
 #include <linux/phy/phy.h>
 #include <linux/regulator/consumer.h>
+#include <linux/rpmsg.h>
 #include <linux/reset.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -45,6 +46,9 @@
 #define PARF_SYS_CTRL				0x00
 #define PARF_PM_CTRL				0x20
 #define PARF_PM_STTS				0x24
+#define PARF_CLKREQ_OVERRIDE			0x2b0
+#define PARF_CLKREQ_IN_VALUE			BIT(3)
+#define PARF_CLKREQ_IN_ENABLE			BIT(1)
 #define PARF_PCS_DEEMPH				0x34
 #define PARF_PCS_SWING				0x38
 #define PARF_PHY_CTRL				0x40
@@ -2093,6 +2097,211 @@ static int qcom_pcie_link_transition_count(struct seq_file *s, void *data)
 	return 0;
 }
 
+int qmp_pcie_drv_clocks(struct phy *phy, bool off);
+
+/*
+ * PCIe DRV. On SM8250 the ADSP can look after an idle link in
+ * L1ss on the AP's behalf; the AP then drops the controller's clocks,
+ * interconnect and CX votes, which otherwise keep XO and DDR on and the SoC
+ * out of system sleep. The ADSP offers a glink channel "pcie_drv"; the
+ * message format is the vendor's (msm_pcie_drv_* in the downstream kernel).
+ */
+#define QCOM_PCIE_DRV_CMD_ENABLE	0xc0000000
+#define QCOM_PCIE_DRV_CMD_DISABLE	0xc0000001
+#define QCOM_PCIE_DRV_MSG_ACK		0xa
+#define QCOM_PCIE_DRV_MSG_CMD		0xc
+#define QCOM_PCIE_DRV_L1SS_TIMEOUT_MS	100
+
+struct qcom_pcie_drv_msg {
+	__le16 major_ver;
+	__le16 minor_ver;
+	__le16 msg_id;
+	__le16 seq;
+	__le16 reply_seq;
+	__le16 payload_size;
+	__le32 dev_id;
+	u8 reserved[8];
+	__le32 dword[4];
+} __packed;
+
+static struct {
+	struct rpmsg_device *rpdev;
+	struct mutex lock;
+	struct completion ack;
+	u16 seq;
+	u32 status;
+} qcom_pcie_drv = {
+	.lock = __MUTEX_INITIALIZER(qcom_pcie_drv.lock),
+};
+
+static int qcom_pcie_drv_cb(struct rpmsg_device *rpdev, void *data, int len,
+			    void *priv, u32 src)
+{
+	struct qcom_pcie_drv_msg *m = data;
+
+	if (len < 28 || le16_to_cpu(m->msg_id) != QCOM_PCIE_DRV_MSG_ACK)
+		return 0;
+	qcom_pcie_drv.status = le32_to_cpu(m->dword[0]);
+	complete(&qcom_pcie_drv.ack);
+	return 0;
+}
+
+static int qcom_pcie_drv_probe(struct rpmsg_device *rpdev)
+{
+	init_completion(&qcom_pcie_drv.ack);
+	qcom_pcie_drv.rpdev = rpdev;
+	dev_info(&rpdev->dev, "PCIe DRV channel up\n");
+	return 0;
+}
+
+static void qcom_pcie_drv_remove(struct rpmsg_device *rpdev)
+{
+	qcom_pcie_drv.rpdev = NULL;
+}
+
+static const struct rpmsg_device_id qcom_pcie_drv_id[] = {
+	{ .name = "pcie_drv" },
+	{ }
+};
+
+static struct rpmsg_driver qcom_pcie_drv_driver = {
+	.probe = qcom_pcie_drv_probe,
+	.remove = qcom_pcie_drv_remove,
+	.callback = qcom_pcie_drv_cb,
+	.id_table = qcom_pcie_drv_id,
+	.drv.name = "qcom-pcie-drv",
+};
+
+static int qcom_pcie_drv_send(u32 cmd, u32 dev_id)
+{
+	struct qcom_pcie_drv_msg m = {
+		.major_ver = cpu_to_le16(1),
+		.msg_id = cpu_to_le16(QCOM_PCIE_DRV_MSG_CMD),
+		.payload_size = cpu_to_le16(16),
+		.dev_id = cpu_to_le32(dev_id),
+		.dword = { cpu_to_le32(cmd), cpu_to_le32(dev_id),
+			   cpu_to_le32(QCOM_PCIE_DRV_L1SS_TIMEOUT_MS) },
+	};
+	int ret;
+
+	if (!qcom_pcie_drv.rpdev)
+		return -ENODEV;
+	m.seq = cpu_to_le16(++qcom_pcie_drv.seq);
+	reinit_completion(&qcom_pcie_drv.ack);
+	ret = rpmsg_send(qcom_pcie_drv.rpdev->ept, &m, sizeof(m));
+	if (ret)
+		return ret;
+	if (!wait_for_completion_timeout(&qcom_pcie_drv.ack,
+					 msecs_to_jiffies(250)))
+		return -ETIMEDOUT;
+	return qcom_pcie_drv.status ? -EIO : 0;
+}
+
+static enum pci_bus_speed qcom_pcie_drv_speed = PCI_SPEED_UNKNOWN;
+
+static struct qcom_pcie *qcom_pcie_from_ep(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *host = pci_find_host_bridge(pdev->bus);
+
+	return dev_get_drvdata(host->dev.parent);
+}
+
+/* Kept during DRV, as the vendor does: the SMMU TBU path for MSIs. */
+static bool qcom_pcie_drv_keep_clk(const char *id)
+{
+	return !strcmp(id, "tbu") || !strcmp(id, "ddrss_sf_tbu");
+}
+
+static void qcom_pcie_drv_clks(struct qcom_pcie_resources_2_7_0 *res, bool off)
+{
+	int i;
+
+	for (i = 0; i < res->num_clks; i++) {
+		if (qcom_pcie_drv_keep_clk(res->clks[i].id))
+			continue;
+		if (off)
+			clk_disable_unprepare(res->clks[i].clk);
+		else
+			clk_prepare_enable(res->clks[i].clk);
+	}
+}
+
+/* Hand the idle link to the ADSP and let go of PCIe resources. */
+int qcom_pcie_drv_suspend(struct pci_dev *pdev)
+{
+	struct qcom_pcie *pcie = qcom_pcie_from_ep(pdev);
+	struct qcom_pcie_resources_2_7_0 *res = &pcie->res.v2_7_0;
+	struct device *dev = pcie->pci->dev;
+	struct qcom_pcie_port *qport;
+	struct pci_dev *port;
+	int ret;
+
+	mutex_lock(&qcom_pcie_drv.lock);
+	/* The ADSP looks after a Gen1 link only (mhi_arch_drv_suspend()). */
+	port = pci_upstream_bridge(pdev);
+	qcom_pcie_drv_speed = port->subordinate->cur_bus_speed;
+	ret = qcom_pcie_drv_speed == PCIE_SPEED_2_5GT ? 0 :
+	      pcie_set_target_speed(port, PCIE_SPEED_2_5GT, true);
+	if (ret) {
+		dev_warn(dev, "DRV: no Gen1 (%d), not handing over\n", ret);
+		goto out;
+	}
+	ret = qcom_pcie_drv_send(QCOM_PCIE_DRV_CMD_ENABLE, pdev->bus->domain_nr);
+	if (ret) {
+		dev_warn(dev, "DRV: ADSP did not take the link: %d\n", ret);
+		goto out;
+	}
+	icc_disable(pcie->icc_mem);
+	icc_disable(pcie->icc_cpu);
+	qcom_pcie_drv_clks(res, true);
+	list_for_each_entry(qport, &pcie->ports, list)
+		qmp_pcie_drv_clocks(qport->phy, true);
+	if (pcie->use_pm_opp)
+		dev_pm_opp_set_opp(dev, NULL);
+	dev_dbg(dev, "DRV: link with the ADSP, resources dropped\n");
+out:
+	mutex_unlock(&qcom_pcie_drv.lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_drv_suspend);
+
+/* Take the link back; must run before anything touches the endpoint. */
+int qcom_pcie_drv_resume(struct pci_dev *pdev)
+{
+	struct qcom_pcie *pcie = qcom_pcie_from_ep(pdev);
+	struct qcom_pcie_resources_2_7_0 *res = &pcie->res.v2_7_0;
+	struct device *dev = pcie->pci->dev;
+	struct qcom_pcie_port *port;
+	u32 val;
+	int ret = 0;
+
+	mutex_lock(&qcom_pcie_drv.lock);
+	icc_enable(pcie->icc_mem);
+	icc_enable(pcie->icc_cpu);
+	if (pcie->use_pm_opp)
+		qcom_pcie_icc_opp_update(pcie);
+	list_for_each_entry(port, &pcie->ports, list)
+		ret = ret ?: qmp_pcie_drv_clocks(port->phy, false);
+	qcom_pcie_drv_clks(res, false);
+	if (ret)
+		dev_err(dev, "DRV: resources back failed: %d\n", ret);
+	ret = qcom_pcie_drv_send(QCOM_PCIE_DRV_CMD_DISABLE, pdev->bus->domain_nr);
+	if (ret)
+		dev_err(dev, "DRV: ADSP did not hand the link back: %d\n", ret);
+	dev_dbg(dev, "DRV: link back from the ADSP\n");
+	/* Always ungate CLKREQ, as the vendor does after DRV. */
+	val = readl(pcie->parf + PARF_CLKREQ_OVERRIDE);
+	writel(val & ~PARF_CLKREQ_IN_ENABLE, pcie->parf + PARF_CLKREQ_OVERRIDE);
+	writel(val & ~(PARF_CLKREQ_IN_ENABLE | PARF_CLKREQ_IN_VALUE),
+	       pcie->parf + PARF_CLKREQ_OVERRIDE);
+	if (qcom_pcie_drv_speed != PCI_SPEED_UNKNOWN)
+		pcie_set_target_speed(pci_upstream_bridge(pdev),
+				      qcom_pcie_drv_speed, true);
+	mutex_unlock(&qcom_pcie_drv.lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_drv_resume);
+
 static void qcom_pcie_init_debugfs(struct qcom_pcie *pcie)
 {
 	struct dw_pcie *pci = pcie->pci;
@@ -2675,4 +2884,12 @@ static struct platform_driver qcom_pcie_driver = {
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
-builtin_platform_driver(qcom_pcie_driver);
+static int __init qcom_pcie_init(void)
+{
+	int ret = register_rpmsg_driver(&qcom_pcie_drv_driver);
+
+	if (ret)
+		pr_warn("qcom-pcie: no PCIe DRV channel driver: %d\n", ret);
+	return platform_driver_register(&qcom_pcie_driver);
+}
+device_initcall(qcom_pcie_init);

@@ -5017,6 +5017,41 @@ err_disable_pipe_clk:
 	return ret;
 }
 
+/*
+ * PCIe DRV: while the ADSP owns the link in L1ss, the AP drops the PHY's
+ * clocks without powering the PHY down or resetting it, and gets them back
+ * before anyone touches the link again. The reference clock runs on, as the
+ * vendor keeps it: it is "suppressible", the hardware gates it at XO
+ * shutdown.
+ */
+static bool qmp_pcie_drv_keep_clk(const char *id)
+{
+	return !strcmp(id, "ref");
+}
+
+int qmp_pcie_drv_clocks(struct phy *phy, bool off)
+{
+	struct qmp_pcie *qmp = phy_get_drvdata(phy);
+	int ret = 0;
+	int i;
+
+	if (off) {
+		clk_bulk_disable_unprepare(qmp->num_pipe_clks, qmp->pipe_clks);
+		for (i = 0; i < ARRAY_SIZE(qmp_pciephy_clk_l); i++)
+			if (!qmp_pcie_drv_keep_clk(qmp->clks[i].id))
+				clk_disable_unprepare(qmp->clks[i].clk);
+	} else {
+		for (i = 0; i < ARRAY_SIZE(qmp_pciephy_clk_l) && !ret; i++)
+			if (!qmp_pcie_drv_keep_clk(qmp->clks[i].id))
+				ret = clk_prepare_enable(qmp->clks[i].clk);
+		if (!ret)
+			ret = clk_bulk_prepare_enable(qmp->num_pipe_clks,
+						      qmp->pipe_clks);
+	}
+	return ret;
+}
+EXPORT_SYMBOL_GPL(qmp_pcie_drv_clocks);
+
 static int qmp_pcie_power_off(struct phy *phy)
 {
 	struct qmp_pcie *qmp = phy_get_drvdata(phy);
