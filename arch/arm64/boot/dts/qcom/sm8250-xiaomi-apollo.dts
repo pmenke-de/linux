@@ -1664,6 +1664,51 @@
 	status = "disabled";
 };
 
+/*
+ * The CPUs' DDR votes active-only (tag 3), as other paths in sm8250.dtsi do.
+ * With tag 0 they stay in the sleep set, and MC0/SH0 ask for bandwidth while
+ * the SoC tries to sleep -- under Android both are 0 there.
+ */
+&cpu0 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu1 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu2 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu3 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu4 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu5 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu6 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
+&cpu7 {
+	interconnects = <&gem_noc MASTER_AMPSS_M0 3 &mc_virt SLAVE_EBI_CH0 3>,
+			<&epss_l3 MASTER_OSM_L3_APPS &epss_l3 SLAVE_OSM_L3>;
+};
+
 &pcie2 {
 	/* MDM2AP PCIe WAKE#: the SDX55 pulls this low to ask for the host */
 	wake-gpios = <&tlmm 87 GPIO_ACTIVE_LOW>;
