@@ -34,12 +34,13 @@
 int qcom_pcie_retrain_link(struct pci_dev *pdev);
 int qcom_pcie_perst_toggle(struct pci_dev *pdev);
 int qcom_pcie_relink(struct pci_dev *pdev);
+int qcom_pcie_link_cycle(struct pci_dev *pdev);
 
 #define HEALTH_CHECK_PERIOD (HZ * 2)
 
-static bool fusion_boot_cycle;
+static bool fusion_boot_cycle = true;
 module_param(fusion_boot_cycle, bool, 0444);
-MODULE_PARM_DESC(fusion_boot_cycle, "Run the vendor-style forced M3+D3hot cycle at mission mode on the SDX55 fusion (lets the modem switch to AMSS PCIe PHY settings)");
+MODULE_PARM_DESC(fusion_boot_cycle, "Run the vendor-style forced M3+D3hot cycle and link cycle at mission mode on the SDX55 fusion (lets the modem switch to AMSS PCIe PHY settings); off keeps the modem in M0 for good");
 
 
 /* PCI VID definitions */
@@ -1648,6 +1649,15 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
 				pci_set_power_state(pdev, PCI_D3hot);
 
 				msleep(250);
+
+				/*
+				 * Take the link all the way down and up again,
+				 * as the vendor does; this is what gets L1.2.
+				 */
+				if (mhi_pdev->info == &mhi_qcom_sdx55_fusion_info &&
+				    qcom_pcie_link_cycle(pdev))
+					dev_warn(&pdev->dev,
+						 "mission mode: link cycle failed\n");
 
 				pci_set_power_state(pdev, PCI_D0);
 				if (pci_enable_device(pdev))

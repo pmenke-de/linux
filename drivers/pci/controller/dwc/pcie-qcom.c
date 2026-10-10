@@ -77,6 +77,7 @@
 /* DBI registers */
 #define AXI_MSTR_RESP_COMP_CTRL0		0x818
 #define AXI_MSTR_RESP_COMP_CTRL1		0x81c
+#define PCIE20_AUX_CLK_FREQ_REG			0xb40
 
 /* MHI registers */
 #define PARF_DEBUG_CNT_PM_LINKST_IN_L2		0xc04
@@ -1077,6 +1078,16 @@ err_disable_regulators:
 static int qcom_pcie_post_init_2_7_0(struct qcom_pcie *pcie)
 {
 	const struct qcom_pcie_cfg *pcie_cfg = pcie->cfg;
+	struct dw_pcie *pci = pcie->pci;
+
+	/*
+	 * As downstream does for L1ss: the core times L1ss off the aux clock
+	 * and must be told its rate (0x14 for 19.2 MHz), and aux and core
+	 * clock must run synchronously (PARF_SYS_CTRL bit 3 clear).
+	 */
+	writel(0x14, pci->dbi_base + PCIE20_AUX_CLK_FREQ_REG);
+	writel(readl(pcie->parf + PARF_SYS_CTRL) & ~BIT(3),
+	       pcie->parf + PARF_SYS_CTRL);
 
 	if (pcie_cfg->override_no_snoop)
 		writel(WR_NO_SNOOP_OVERRIDE_EN | RD_NO_SNOOP_OVERRIDE_EN,
@@ -1094,7 +1105,8 @@ static int qcom_pcie_enable_aspm(struct pci_dev *pdev, void *userdata)
 	 * substates.
 	 */
 	pci_set_power_state_locked(pdev, PCI_D0);
-	pci_enable_link_state_locked(pdev, PCIE_LINK_STATE_ALL);
+	/* No L0s, as downstream (qcom,no-l0s-supported). */
+	pci_enable_link_state_locked(pdev, PCIE_LINK_STATE_ALL & ~PCIE_LINK_STATE_L0S);
 
 	return 0;
 }
@@ -1739,6 +1751,63 @@ static void qcom_pcie_host_pme_turn_off(struct dw_pcie_rp *pp)
 
 	writel(ELBI_SYS_CTRL_PME_TURNOFF_MSG, pci->elbi_base + ELBI_SYS_CTRL);
 }
+
+/*
+ * After the vendor's forced suspend at mission mode: take the link all the
+ * way down and back while the endpoint sits in D3hot -- PME_Turn_Off, L2/L3
+ * Ready, PERST#, controller and PHY off; then a fresh link. The vendor's
+ * comment says the modem switches to its mission-mode PCIe settings on this,
+ * and only afterwards does the link reach L1.2.
+ */
+int qcom_pcie_link_cycle(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *host = pci_find_host_bridge(pdev->bus);
+	struct qcom_pcie *pcie = dev_get_drvdata(host->dev.parent);
+	struct dw_pcie *pci = pcie->pci;
+	struct dw_pcie_rp *pp = &pci->pp;
+	bool skip = pp->skip_pwrctrl_off;
+	u32 val;
+	int ret;
+
+	/* The controller reset wipes the root port's config space. */
+	pci_save_state(pdev->bus->self);
+
+	qcom_pcie_host_pme_turn_off(pp);
+	ret = read_poll_timeout(dw_pcie_get_ltssm, val,
+				val == DW_PCIE_LTSSM_L2_IDLE ||
+				val <= DW_PCIE_LTSSM_DETECT_WAIT,
+				PCIE_PME_TO_L2_TIMEOUT_US / 10,
+				PCIE_PME_TO_L2_TIMEOUT_US, false, pci);
+	dev_dbg(pci->dev, "link cycle: L2 %s, LTSSM 0x%x\n",
+		ret ? "timeout" : "reached", val);
+	udelay(1);
+
+	pp->skip_pwrctrl_off = true;
+	dw_pcie_stop_link(pci);
+	qcom_pcie_host_deinit(pp);
+	msleep(100);
+	/* Android keeps this link at Gen1 for good (LnkCtl2 = 1). */
+	pci->max_link_speed = 1;
+	ret = qcom_pcie_host_init(pp);
+	pp->skip_pwrctrl_off = skip;
+	if (ret) {
+		dev_err(pci->dev, "link cycle: host init failed: %d\n", ret);
+		return ret;
+	}
+	dw_pcie_setup_rc(pp);
+	ret = dw_pcie_start_link(pci);
+	if (!ret)
+		ret = dw_pcie_wait_for_link(pci);
+	if (ret) {
+		dev_err(pci->dev, "link cycle: link did not come up: %d\n", ret);
+		return ret;
+	}
+	qcom_pcie_host_post_init(pp);
+	pci_restore_state(pdev->bus->self);
+	dev_info(pci->dev, "link cycle: link up again\n");
+	return 0;
+}
+EXPORT_SYMBOL_GPL(qcom_pcie_link_cycle);
 
 static const struct dw_pcie_host_ops qcom_pcie_dw_ops = {
 	.init		= qcom_pcie_host_init,
